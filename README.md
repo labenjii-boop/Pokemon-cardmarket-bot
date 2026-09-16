@@ -42,7 +42,24 @@ review rather than attempting the whole spec in one pass.
   Search/Charts/Sales/Watchlist/Compare screens, a real 10-year backfill run, and macOS
   packaging (the `.dmg` build itself must run on an actual Mac — see "Packaging" below).
 
+## Just want to try it? (no Xcode/Rust needed)
+
+There's no packaged `.dmg` yet (that's Phase 11), so "trying it" today means running it from
+source — but you don't need the full native-app toolchain for that, only Python 3 and Node.js.
+Once you have the code and those two installed:
+
+```bash
+./try.sh
+```
+
+This sets up everything, loads real data on first run, starts both servers, and opens the app
+in your browser at `http://localhost:1420` (a browser tab, not a native window — that part does
+need Rust/Xcode, see below). Ctrl+C in that terminal stops everything.
+
 ## Prerequisites (install these on your Mac first — Section 15)
+
+Only needed for the full native app (`npm run tauri dev` below) — skip this section if `./try.sh`
+above is all you want.
 
 ```bash
 # Xcode Command Line Tools (Rust/Tauri needs a C toolchain)
