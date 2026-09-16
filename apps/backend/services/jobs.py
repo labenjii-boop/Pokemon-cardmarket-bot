@@ -51,6 +51,27 @@ def sync_fx_rates(conn: sqlite3.Connection, days: int = 90) -> dict:
         connector.close()
 
 
+def _import_from_connector(conn: sqlite3.Connection, source_id: str, connector) -> tuple[int, list[str]]:
+    """Shared by both catalog connectors: fetch every set, then every card in each set. A set
+    that fails (a transient error retries already exhausted, an id the connector mishandles,
+    etc.) is recorded and skipped rather than aborting the whole source — losing every
+    already-imported set because one later set failed was the actual bug behind the first real
+    run's "0 cards" result."""
+    card_count = 0
+    set_errors: list[str] = []
+    set_ids = ingest_catalog_sets(conn, connector.fetch_sets())
+    for key in set_ids:
+        _, source_set_id = key.split(":", 1)
+        try:
+            for card in connector.fetch_cards(source_set_id):
+                upsert_card(conn, card, set_ids[key])
+                card_count += 1
+        except Exception as exc:  # noqa: BLE001 — one bad set must not lose every other set
+            set_errors.append(f"{source_id}/{source_set_id}: {exc}")
+            logger.warning("%s: failed to import set %s: %s", source_id, source_set_id, exc)
+    return card_count, set_errors
+
+
 def import_catalog(conn: sqlite3.Connection) -> dict:
     """Full catalog refresh across both catalog connectors. This is the heavy, infrequent job
     (Section 13 Phase 2/3) — new sets appear a handful of times a year, not daily."""
@@ -60,17 +81,16 @@ def import_catalog(conn: sqlite3.Connection) -> dict:
     pk_connector = PokemonTcgIoConnector(api_key=api_key)
     run_id = start_run(conn, "pokemontcg_io")
     try:
-        set_ids = ingest_catalog_sets(conn, pk_connector.fetch_sets())
-        card_count = 0
-        for key in set_ids:
-            _, source_set_id = key.split(":", 1)
-            for card in pk_connector.fetch_cards(source_set_id):
-                upsert_card(conn, card, set_ids[key])
-                card_count += 1
+        card_count, set_errors = _import_from_connector(conn, "pokemontcg_io", pk_connector)
         conn.commit()
         totals["pokemontcg_io"] = card_count
-        finish_run(conn, run_id, "ok", records_fetched=card_count, records_written=card_count)
-    except Exception as exc:  # noqa: BLE001
+        totals["errors"].extend(set_errors)
+        finish_run(
+            conn, run_id, "ok" if not set_errors else "error",
+            records_fetched=card_count, records_written=card_count,
+            error_message="; ".join(set_errors) or None,
+        )
+    except Exception as exc:  # noqa: BLE001 — fetch_sets itself failed; nothing to salvage
         conn.rollback()
         finish_run(conn, run_id, "error", error_message=str(exc))
         totals["errors"].append(f"pokemontcg_io: {exc}")
@@ -81,16 +101,15 @@ def import_catalog(conn: sqlite3.Connection) -> dict:
     tcgdex_connector = TcgdexConnector()
     run_id = start_run(conn, "tcgdex")
     try:
-        set_ids = ingest_catalog_sets(conn, tcgdex_connector.fetch_sets())
-        card_count = 0
-        for key in set_ids:
-            _, source_set_id = key.split(":", 1)
-            for card in tcgdex_connector.fetch_cards(source_set_id):
-                upsert_card(conn, card, set_ids[key])
-                card_count += 1
+        card_count, set_errors = _import_from_connector(conn, "tcgdex", tcgdex_connector)
         conn.commit()
         totals["tcgdex"] = card_count
-        finish_run(conn, run_id, "ok", records_fetched=card_count, records_written=card_count)
+        totals["errors"].extend(set_errors)
+        finish_run(
+            conn, run_id, "ok" if not set_errors else "error",
+            records_fetched=card_count, records_written=card_count,
+            error_message="; ".join(set_errors) or None,
+        )
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
         finish_run(conn, run_id, "error", error_message=str(exc))

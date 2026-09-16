@@ -101,3 +101,43 @@ def test_import_catalog_writes_cards_from_both_sources(db_conn):
 
     count = db_conn.execute("SELECT COUNT(*) AS c FROM cards").fetchone()["c"]
     assert count == 2  # one from each source, distinct internal ids
+
+
+@respx.mock
+def test_import_catalog_survives_one_set_failing(db_conn):
+    # Real regression from the first live run: a persistent 500 on one set's /cards call used
+    # to abort the entire pokemontcg.io import, losing every set that had already succeeded.
+    respx.get(f"{PK_BASE_URL}/sets").mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [{"id": "bad-set", "name": "Bad Set"}, {"id": "good-set", "name": "Good Set"}]}),
+            httpx.Response(200, json={"data": []}),
+        ]
+    )
+
+    def cards_handler(request):
+        if "bad-set" in request.url.params.get("q", ""):
+            return httpx.Response(500)
+        if request.url.params.get("page") == "1":
+            return httpx.Response(200, json={"data": [{"id": "good-set-1", "name": "Pikachu", "number": "1"}]})
+        return httpx.Response(200, json={"data": []})  # page 2+: end pagination
+
+    respx.get(f"{PK_BASE_URL}/cards").mock(side_effect=cards_handler)
+    respx.get(f"{TCGDEX_BASE_URL}/en/sets").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{TCGDEX_BASE_URL}/ja/sets").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{TCGDEX_BASE_URL}/zh-tw/sets").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{TCGDEX_BASE_URL}/zh-cn/sets").mock(return_value=httpx.Response(200, json=[]))
+
+    result = jobs.import_catalog(db_conn)
+
+    assert result["pokemontcg_io"] == 1  # good-set's card still got imported
+    assert len(result["errors"]) == 1
+    assert "bad-set" in result["errors"][0]
+
+    count = db_conn.execute("SELECT COUNT(*) AS c FROM cards WHERE source_card_id = 'good-set-1'").fetchone()["c"]
+    assert count == 1
+
+    run = db_conn.execute(
+        "SELECT status, records_written FROM connector_runs WHERE source_id = 'pokemontcg_io'"
+    ).fetchone()
+    assert run["status"] == "error"  # honest: the run had a failure, even though it also made progress
+    assert run["records_written"] == 1

@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 
 import httpx
 
+from connectors._retry import get_with_retry
 from connectors.base import FxConnector
 
 HIST_URL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist-90d.xml"
@@ -39,7 +40,7 @@ class EcbFxConnector(FxConnector):
         `fetch_full_history`. This method serves the common case (recent rates for the currently
         running app) from the lightweight feed.
         """
-        resp = self._client.get(HIST_URL)
+        resp = get_with_retry(self._client, HIST_URL)
         resp.raise_for_status()
         yield from _parse_feed(resp.text, start_date, end_date)
 
@@ -54,7 +55,7 @@ class EcbFxConnector(FxConnector):
                 "https://sdw-wsrest.ecb.europa.eu/service/data/EXR/"
                 f"D.{currency}.EUR.SP00.A?format=csvdata"
             )
-            resp = self._client.get(url, headers={"Accept": "text/csv"})
+            resp = get_with_retry(self._client, url, headers={"Accept": "text/csv"})
             if resp.status_code == 404:
                 continue  # currency not published by ECB (e.g. currency retired before 1999)
             resp.raise_for_status()

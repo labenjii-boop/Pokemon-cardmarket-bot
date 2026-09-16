@@ -11,9 +11,13 @@ from typing import Iterable
 
 import httpx
 
+from connectors._retry import get_with_retry
 from connectors.base import CatalogCard, CatalogConnector, CatalogSet, PriceObservation, SnapshotConnector, utcnow_iso
 
 BASE_URL = "https://api.pokemontcg.io/v2"
+# 250 (the API's max) turned out to trigger 500s on the free tier in practice; 100 is the safer
+# default this connector was actually observed working reliably at.
+PAGE_SIZE = 100
 
 
 class PokemonTcgIoConnector(CatalogConnector, SnapshotConnector):
@@ -31,7 +35,7 @@ class PokemonTcgIoConnector(CatalogConnector, SnapshotConnector):
     def fetch_sets(self) -> Iterable[CatalogSet]:
         page = 1
         while True:
-            resp = self._client.get("/sets", params={"page": page, "pageSize": 250})
+            resp = get_with_retry(self._client, "/sets", params={"page": page, "pageSize": PAGE_SIZE})
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if not data:
@@ -52,9 +56,10 @@ class PokemonTcgIoConnector(CatalogConnector, SnapshotConnector):
     def fetch_cards(self, set_source_set_id: str) -> Iterable[CatalogCard]:
         page = 1
         while True:
-            resp = self._client.get(
+            resp = get_with_retry(
+                self._client,
                 "/cards",
-                params={"q": f"set.id:{set_source_set_id}", "page": page, "pageSize": 250},
+                params={"q": f"set.id:{set_source_set_id}", "page": page, "pageSize": PAGE_SIZE},
             )
             resp.raise_for_status()
             data = resp.json().get("data", [])
@@ -88,7 +93,7 @@ class PokemonTcgIoConnector(CatalogConnector, SnapshotConnector):
         page = 1
         observed_at = utcnow_iso()
         while True:
-            resp = self._client.get("/cards", params={"page": page, "pageSize": 250})
+            resp = get_with_retry(self._client, "/cards", params={"page": page, "pageSize": PAGE_SIZE})
             resp.raise_for_status()
             data = resp.json().get("data", [])
             if not data:
