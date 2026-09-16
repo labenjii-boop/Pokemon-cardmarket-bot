@@ -128,19 +128,37 @@ def poll_price_snapshots(conn: sqlite3.Connection) -> dict:
     run_id = start_run(conn, "pokemontcg_io")
     api_key = get_secret("pokemontcg_io_api_key")
     connector = PokemonTcgIoConnector(api_key=api_key)
+    observations = []
+    fetch_error: str | None = None
     try:
-        observations = list(connector.fetch_observations())
+        # Consumed one page at a time (not list(connector.fetch_observations())) so a page
+        # failing partway through a run — this API has genuinely been flaky in practice, see
+        # DATA_SOURCES.md §1 — keeps whatever earlier pages already succeeded instead of
+        # discarding the whole run. Same bug class import_catalog had before it was fixed.
+        for obs in connector.fetch_observations():
+            observations.append(obs)
+    except Exception as exc:  # noqa: BLE001 — stop paging, but keep what already came in
+        fetch_error = str(exc)
+        logger.warning("pokemontcg.io: stopped early after %d observations: %s", len(observations), exc)
+    finally:
+        connector.close()
+
+    try:
         written = ingest_price_observations(conn, "pokemontcg_io", observations)
         conn.commit()
-        finish_run(conn, run_id, "ok", records_fetched=len(observations), records_written=written)
-        return {"fetched": len(observations), "written": written}
-    except Exception as exc:  # noqa: BLE001
+        finish_run(
+            conn, run_id, "ok" if not fetch_error else "error",
+            records_fetched=len(observations), records_written=written, error_message=fetch_error,
+        )
+        result = {"fetched": len(observations), "written": written}
+        if fetch_error:
+            result["error"] = fetch_error
+        return result
+    except Exception as exc:  # noqa: BLE001 — the DB write itself failed, not the fetch
         conn.rollback()
         finish_run(conn, run_id, "error", error_message=str(exc))
         logger.exception("price snapshot poll failed")
-        return {"fetched": 0, "written": 0, "error": str(exc)}
-    finally:
-        connector.close()
+        return {"fetched": len(observations), "written": 0, "error": str(exc)}
 
 
 def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[str]:

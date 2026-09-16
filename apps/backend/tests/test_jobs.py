@@ -73,6 +73,39 @@ def test_poll_price_snapshots_ingests_and_records_run(db_conn):
 
 
 @respx.mock
+def test_poll_price_snapshots_keeps_earlier_pages_after_a_later_page_fails(db_conn):
+    # Real regression: pokemontcg.io failed on page 2 of a live run. list(fetch_observations())
+    # would have discarded page 1's already-successful observations along with it.
+    from connectors.base import CatalogCard, CatalogSet
+    from services.ingest import upsert_card, upsert_set
+
+    set_id = upsert_set(db_conn, CatalogSet(source="pokemontcg_io", source_set_id="base1", name="Base Set", language="en"))
+    upsert_card(
+        db_conn,
+        CatalogCard(source="pokemontcg_io", source_card_id="base1-4", set_source_set_id="base1", name="Charizard", number="4", language="en"),
+        set_id,
+    )
+    db_conn.commit()
+
+    respx.get(f"{PK_BASE_URL}/cards").mock(
+        side_effect=[
+            httpx.Response(200, json={"data": [{"id": "base1-4", "tcgplayer": {"prices": {"holofoil": {"market": 250.0}}}}]}),
+            httpx.Response(500),
+            httpx.Response(500),
+            httpx.Response(500),  # get_with_retry exhausts its attempts and raises
+        ]
+    )
+
+    result = jobs.poll_price_snapshots(db_conn)
+    assert result["written"] == 1  # page 1's observation, not lost
+    assert "error" in result
+
+    run = db_conn.execute("SELECT status, records_written FROM connector_runs WHERE source_id = 'pokemontcg_io'").fetchone()
+    assert run["status"] == "error"  # honest: the run didn't fully complete
+    assert run["records_written"] == 1  # but what it did get is still there
+
+
+@respx.mock
 def test_import_catalog_writes_cards_from_both_sources(db_conn):
     respx.get(f"{PK_BASE_URL}/sets").mock(
         side_effect=[

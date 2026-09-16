@@ -124,6 +124,20 @@ def test_fetch_observations_skips_a_404_card_without_raising():
 
 
 @respx.mock
+def test_fetch_observations_skips_a_persistently_failing_card_without_raising():
+    # One card in a batch hitting a persistent 500 (after get_with_retry exhausts its attempts)
+    # must not lose the other cards in the same batch — same bug class as the pokemontcg.io
+    # pagination fix.
+    respx.get(f"{BASE_URL}/en/cards/bad-1").mock(return_value=httpx.Response(500))
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_RESPONSE))
+
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:bad-1", "en:ecard3-146"]))
+    assert len(observations) > 0
+    assert all(o.card_source_id == "en:ecard3-146" for o in observations)
+
+
+@respx.mock
 def test_fetch_observations_handles_card_with_no_marketplace_listing():
     respx.get(f"{BASE_URL}/en/cards/obscure-1").mock(
         return_value=httpx.Response(200, json={"id": "obscure-1", "pricing": {"cardmarket": None, "tcgplayer": None}})

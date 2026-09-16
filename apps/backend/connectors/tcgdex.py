@@ -28,6 +28,7 @@ listed on that marketplace — treated as "no observation from that source," not
 """
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Literal
 from urllib.parse import quote
 
@@ -35,6 +36,8 @@ import httpx
 
 from connectors._retry import get_with_retry
 from connectors.base import CatalogCard, CatalogConnector, CatalogSet, PriceObservation, SnapshotConnector, utcnow_iso
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.tcgdex.net/v2"
 
@@ -114,10 +117,16 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
         observed_at = utcnow_iso()
         for source_card_id in card_ids:
             locale, tcgdex_id = source_card_id.split(":", 1)
-            resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
-            if resp.status_code == 404:
-                continue  # card id we catalogued no longer resolves upstream — skip, not fatal
-            resp.raise_for_status()
+            try:
+                resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
+                if resp.status_code == 404:
+                    continue  # card id we catalogued no longer resolves upstream — skip, not fatal
+                resp.raise_for_status()
+            except httpx.HTTPError as exc:
+                # One card in a 300-card batch failing (after retries already exhausted in
+                # get_with_retry) must not throw away the other 299 — log it and keep going.
+                logger.warning("skipping %s after a persistent error: %s", source_card_id, exc)
+                continue
             yield from _observations_from_card_detail(source_card_id, resp.json(), observed_at)
 
 
