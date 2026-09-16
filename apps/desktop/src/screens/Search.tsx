@@ -60,7 +60,20 @@ export function SearchScreen() {
             <div className="mb-2 aspect-[5/7] overflow-hidden rounded bg-[var(--color-surface-raised)]">
               {card.image_source_url && (
                 <img
-                  src={card.image_source_url}
+                  // TCGdex's `image` field is a base path with no quality/format suffix — the
+                  // actual asset lives at "<base>/<quality>.<ext>" (Section 10: "Image storage:
+                  // local folder cache" will replace this hotlinking with a real download +
+                  // cache later; for now this talks straight to TCGdex's CDN). webp first
+                  // (their documented default), falling back to png once, since not every
+                  // quality/format combination is guaranteed to exist for every card.
+                  src={`${card.image_source_url}/high.webp`}
+                  onError={(e) => {
+                    const img = e.currentTarget;
+                    if (img.dataset.fallback !== "1") {
+                      img.dataset.fallback = "1";
+                      img.src = `${card.image_source_url}/high.png`;
+                    }
+                  }}
                   alt={card.name}
                   className="h-full w-full object-cover"
                   loading="lazy"
