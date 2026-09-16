@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+/* Dark mode is the default and primary theme (Section 11). A light `data-theme="light"`
+   override exists for later, but nothing in v0.1 switches it yet. */
+@theme {
+  --color-bg: #0b0d10;
+  --color-surface: #14171c;
+  --color-surface-raised: #1c2027;
+  --color-border: #262b33;
+  --color-text: #e6e8eb;
+  --color-text-muted: #9aa2ad;
+  --color-accent: #5b8cff;
+  --color-gain: #2fbf71;
+  --color-loss: #ef5350;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

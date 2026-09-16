@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+apps/backend/dist/
+apps/backend/build/
+apps/backend/.pytest_cache/
+
+# Node / frontend
+node_modules/
+apps/desktop/dist/
+
+# Tauri / Rust
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/binaries/
+
+# Local data / secrets (never commit real app data or API keys)
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+.env
+.env.local
+
+# OS
+.DS_Store

@@ -1,0 +1,141 @@
+"""pokemontcg.io v2 connector — English catalog + embedded market-price snapshot.
+
+Free tier: 1,000 requests/day without a key, 20,000/day with a free key (DATA_SOURCES.md §1/§5).
+The API embeds current TCGplayer (USD) and Cardmarket (EUR) aggregate pricing on every card
+response — that pricing is what `fetch_observations` turns into `PriceObservation` rows, since
+no free/compliant per-sale feed exists for TCGplayer or Cardmarket (DATA_SOURCES.md §0).
+"""
+from __future__ import annotations
+
+from typing import Iterable
+
+import httpx
+
+from connectors.base import CatalogCard, CatalogConnector, CatalogSet, PriceObservation, SnapshotConnector, utcnow_iso
+
+BASE_URL = "https://api.pokemontcg.io/v2"
+
+
+class PokemonTcgIoConnector(CatalogConnector, SnapshotConnector):
+    source_id = "pokemontcg_io"
+
+    def __init__(self, api_key: str | None = None, client: httpx.Client | None = None):
+        headers = {"X-Api-Key": api_key} if api_key else {}
+        self._client = client or httpx.Client(base_url=BASE_URL, headers=headers, timeout=30.0)
+
+    def close(self) -> None:
+        self._client.close()
+
+    # -- CatalogConnector -----------------------------------------------------------------
+
+    def fetch_sets(self) -> Iterable[CatalogSet]:
+        page = 1
+        while True:
+            resp = self._client.get("/sets", params={"page": page, "pageSize": 250})
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                return
+            for raw in data:
+                yield CatalogSet(
+                    source=self.source_id,
+                    source_set_id=raw["id"],
+                    name=raw["name"],
+                    language="en",
+                    series=raw.get("series"),
+                    total_cards=(raw.get("printedTotal") or raw.get("total")),
+                    release_date=raw.get("releaseDate"),
+                    set_code=raw.get("ptcgoCode"),
+                )
+            page += 1
+
+    def fetch_cards(self, set_source_set_id: str) -> Iterable[CatalogCard]:
+        page = 1
+        while True:
+            resp = self._client.get(
+                "/cards",
+                params={"q": f"set.id:{set_source_set_id}", "page": page, "pageSize": 250},
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                return
+            for raw in data:
+                yield CatalogCard(
+                    source=self.source_id,
+                    source_card_id=raw["id"],
+                    set_source_set_id=set_source_set_id,
+                    name=raw["name"],
+                    name_en=raw["name"],
+                    number=raw.get("number", ""),
+                    language="en",
+                    set_total=(raw.get("set", {}).get("printedTotal")),
+                    rarity=raw.get("rarity"),
+                    variant=_infer_variant(raw),
+                    release_date=raw.get("set", {}).get("releaseDate"),
+                    image_source_url=(raw.get("images", {}) or {}).get("large") or (raw.get("images", {}) or {}).get("small"),
+                )
+            page += 1
+
+    # -- SnapshotConnector ------------------------------------------------------------------
+
+    def fetch_observations(self, since: str | None = None) -> Iterable[PriceObservation]:
+        """Iterates every card and emits one market-price observation per pricing point the API
+        reports (TCGplayer 'market' price in USD, Cardmarket 'trend' price in EUR). `since` is
+        accepted for interface parity but unused: this endpoint has no incremental cursor, it
+        always returns the current price, which is exactly what a snapshot connector wants.
+        """
+        page = 1
+        observed_at = utcnow_iso()
+        while True:
+            resp = self._client.get("/cards", params={"page": page, "pageSize": 250})
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            if not data:
+                return
+            for raw in data:
+                yield from _observations_from_card(raw, observed_at)
+            page += 1
+
+
+def _infer_variant(raw: dict) -> str | None:
+    subtypes = raw.get("subtypes") or []
+    if "1st Edition" in (raw.get("name", "") or ""):
+        return "1st-edition"
+    if any(s.lower() == "vmax" or s.lower() == "vstar" for s in subtypes):
+        return None
+    tcgplayer = raw.get("tcgplayer", {}).get("prices", {}) or {}
+    if "1stEditionHolofoil" in tcgplayer:
+        return "1st-edition-holo"
+    if "reverseHolofoil" in tcgplayer:
+        return "reverse-holo"
+    if "holofoil" in tcgplayer:
+        return "holo"
+    return None
+
+
+def _observations_from_card(raw: dict, observed_at: str) -> Iterable[PriceObservation]:
+    card_id = raw["id"]
+    tcgplayer = (raw.get("tcgplayer") or {}).get("prices") or {}
+    for _finish, prices in tcgplayer.items():
+        market = prices.get("market")
+        if market is not None:
+            yield PriceObservation(
+                source="pokemontcg_io",
+                card_source_id=card_id,
+                observed_at=observed_at,
+                price_amount=float(market),
+                price_currency="USD",
+                price_kind="market",
+            )
+    cardmarket = (raw.get("cardmarket") or {}).get("prices") or {}
+    trend = cardmarket.get("trendPrice")
+    if trend is not None:
+        yield PriceObservation(
+            source="pokemontcg_io",
+            card_source_id=card_id,
+            observed_at=observed_at,
+            price_amount=float(trend),
+            price_currency="EUR",
+            price_kind="market",
+        )
