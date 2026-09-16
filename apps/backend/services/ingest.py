@@ -20,7 +20,7 @@ def upsert_set(conn: sqlite3.Connection, s: CatalogSet) -> str:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (source, source_set_id) DO UPDATE SET
             name = excluded.name, total_cards = excluded.total_cards,
-            release_date = excluded.release_date
+            release_date = excluded.release_date, series = excluded.series
         """,
         (
             internal_id, s.source_set_id, s.source, s.name, s.name_original, s.series, s.era,

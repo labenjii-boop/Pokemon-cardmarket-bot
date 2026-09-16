@@ -176,13 +176,13 @@ def test_import_catalog_survives_one_set_failing(db_conn):
     assert run["records_written"] == 1
 
 
-def _seed_tcgdex_card(conn, number: str, set_source_set_id: str = "en:base1", release_date: str | None = None) -> str:
+def _seed_tcgdex_card(conn, number: str, set_source_set_id: str = "en:base1", release_date: str | None = None, series: str | None = None) -> str:
     from connectors.base import CatalogCard, CatalogSet
     from services.ingest import upsert_card, upsert_set
 
     set_id = upsert_set(
         conn,
-        CatalogSet(source="tcgdex", source_set_id=set_source_set_id, name=set_source_set_id, language="en", release_date=release_date),
+        CatalogSet(source="tcgdex", source_set_id=set_source_set_id, name=set_source_set_id, language="en", release_date=release_date, series=series),
     )
     return upsert_card(
         conn,
@@ -215,6 +215,18 @@ def test_select_cards_for_tcgdex_poll_prefers_newer_sets_among_never_observed(db
 
     ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10)
     assert ordered == ["en:new-set-1", "en:old-set-1"]
+
+
+def test_select_cards_for_tcgdex_poll_excludes_pokemon_tcg_pocket(db_conn):
+    # Real regression, root cause: a rotation batch of 300 came back with zero prices because it
+    # was entirely Pokémon TCG Pocket cards (serie id "tcgp") — a digital-only mobile game that
+    # can never have physical-marketplace pricing. Must never be selected for a price poll.
+    _seed_tcgdex_card(db_conn, "1", set_source_set_id="en:A1", series="tcgp")
+    _seed_tcgdex_card(db_conn, "1", set_source_set_id="en:base1", series="base")
+    db_conn.commit()
+
+    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10)
+    assert ordered == ["en:base1-1"]
 
 
 def test_select_cards_for_tcgdex_poll_respects_limit(db_conn):

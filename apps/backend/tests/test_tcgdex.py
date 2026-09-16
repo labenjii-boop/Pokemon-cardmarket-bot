@@ -8,7 +8,13 @@ from connectors.tcgdex import BASE_URL, TcgdexConnector
 @respx.mock
 def test_fetch_sets_covers_all_languages():
     respx.get(f"{BASE_URL}/en/sets").mock(return_value=httpx.Response(200, json=[{"id": "base1", "name": "Base Set"}]))
+    respx.get(f"{BASE_URL}/en/sets/base1").mock(
+        return_value=httpx.Response(200, json={"id": "base1", "releaseDate": "1999-01-09", "serie": {"id": "base", "name": "Base"}})
+    )
     respx.get(f"{BASE_URL}/ja/sets").mock(return_value=httpx.Response(200, json=[{"id": "s1a", "name": "VMAXライジング"}]))
+    respx.get(f"{BASE_URL}/ja/sets/s1a").mock(
+        return_value=httpx.Response(200, json={"id": "s1a", "releaseDate": "2020-06-12", "serie": {"id": "sm", "name": "Sun & Moon"}})
+    )
     respx.get(f"{BASE_URL}/zh-tw/sets").mock(return_value=httpx.Response(404))
     respx.get(f"{BASE_URL}/zh-cn/sets").mock(return_value=httpx.Response(200, json=[]))
 
@@ -17,7 +23,26 @@ def test_fetch_sets_covers_all_languages():
 
     languages = {s.language for s in sets}
     assert languages == {"en", "ja"}
-    assert any(s.source_set_id == "en:base1" for s in sets)
+    base_set = next(s for s in sets if s.source_set_id == "en:base1")
+    assert base_set.release_date == "1999-01-09"
+    assert base_set.series == "base"
+
+
+@respx.mock
+def test_fetch_sets_still_yields_a_set_whose_detail_fetch_fails():
+    # _fetch_set_detail returning None (a transient failure) shouldn't drop the set entirely —
+    # just leave release_date/series unset for it until a later refresh picks it up.
+    respx.get(f"{BASE_URL}/en/sets").mock(return_value=httpx.Response(200, json=[{"id": "base1", "name": "Base Set"}]))
+    respx.get(f"{BASE_URL}/en/sets/base1").mock(return_value=httpx.Response(404))
+    respx.get(f"{BASE_URL}/ja/sets").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{BASE_URL}/zh-tw/sets").mock(return_value=httpx.Response(200, json=[]))
+    respx.get(f"{BASE_URL}/zh-cn/sets").mock(return_value=httpx.Response(200, json=[]))
+
+    connector = TcgdexConnector()
+    sets = list(connector.fetch_sets())
+    assert len(sets) == 1
+    assert sets[0].release_date is None
+    assert sets[0].series is None
 
 
 @respx.mock
@@ -51,6 +76,26 @@ def test_fetch_cards_infers_variant():
     assert cards[0].variant == "holo"
     assert cards[0].language == "en"
     assert cards[0].source_card_id == "en:base1-4"
+
+
+@respx.mock
+def test_fetch_cards_skips_pokemon_tcg_pocket_sets():
+    # Real bug: TCGdex catalogs Pokémon TCG Pocket (a separate digital-only mobile game) through
+    # the same endpoints as the physical TCG. Confirmed via a real GET /v2/en/sets/A1 ("Genetic
+    # Apex") that Pocket sets carry serie.id == "tcgp" — those cards can never have
+    # TCGplayer/Cardmarket pricing since they aren't physical objects, so don't import them.
+    respx.get(f"{BASE_URL}/en/sets/A1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "A1", "name": "Genetic Apex", "serie": {"id": "tcgp", "name": "Pokémon TCG Pocket"},
+                "cards": [{"id": "A1-001", "localId": "001", "name": "Bulbasaur"}],
+            },
+        )
+    )
+    connector = TcgdexConnector()
+    cards = list(connector.fetch_cards("en:A1"))
+    assert cards == []
 
 
 @respx.mock

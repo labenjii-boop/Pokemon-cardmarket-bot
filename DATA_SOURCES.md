@@ -80,6 +80,17 @@ be checked per-set at import time — the importer records which of `zh-cn` / `z
 equivalent locale codes) actually returned data for each set, and the catalog schema keeps them
 as fully separate `sets`/`cards` rows (never merged), per the spec's explicit requirement.
 
+**Pokémon TCG Pocket is out of scope and excluded (confirmed 2026-09):** TCGdex catalogs
+**Pokémon TCG Pocket** — a separate, digital-only mobile game — through the same `/sets` and
+`/cards` endpoints as the physical trading card game this app tracks (set ids like `A1`,
+`serie.id == "tcgp"`). This surfaced as a real bug: a price-poll batch came back with 300/300
+zero-price cards, all Pocket cards, because they're not physical objects and can never have a
+TCGplayer/Cardmarket listing. The catalog importer (`connectors/tcgdex.py`) now records Pocket
+sets (for visibility/traceability) but never imports their cards, so nothing Pocket-sourced ever
+reaches price polling. If TCG Pocket tracking is ever wanted, it needs its own explicit scope
+decision (Section 1) and its own ranking treatment — it doesn't fit the physical-card pricing
+model (Section 2's "start price"/"current price" concept) at all.
+
 ## 2. Foreign exchange rates
 
 | Source | Status | Access method | Notes |

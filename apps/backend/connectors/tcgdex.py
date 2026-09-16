@@ -25,6 +25,19 @@ looks like:
     }
 `cardmarket`/`tcgplayer` (or the whole `pricing` object) can be missing/null when a card isn't
 listed on that marketplace — treated as "no observation from that source," not an error.
+
+TCGdex also catalogs **Pokémon TCG Pocket** — a separate, digital-only mobile game — through the
+same `/sets` and `/cards` endpoints as the physical trading card game this app tracks. Pocket
+cards can never have TCGplayer/Cardmarket pricing (they're not physical objects anyone buys or
+sells), which is exactly what a real price poll surfaced: a 300-card batch that returned zero
+prices, all from set "A1" ("Genetic Apex"). Confirmed via the set detail endpoint
+(`GET /v2/en/sets/A1`) that Pocket sets carry `"serie": {"id": "tcgp", ...}`, vs. a physical set
+like Base Set's `"serie": {"id": "base", ...}` — the set-*list* endpoint doesn't expose `serie`
+at all, so `fetch_sets` below fetches each set's detail (one extra request per set, during the
+weekly catalog refresh, not the frequent price poll) specifically to capture this and
+`releaseDate` (also list-endpoint-absent). Pocket sets are still recorded in `sets` (so they're
+visible/traceable), but `fetch_cards` skips importing any of their cards — see the `serie` check
+there — so nothing Pocket-sourced ever reaches price polling in the first place.
 """
 from __future__ import annotations
 
@@ -70,15 +83,29 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
             return  # this language has no sets in TCGdex yet — not an error (see module docstring)
         resp.raise_for_status()
         for raw in resp.json():
+            detail = self._fetch_set_detail(locale, raw["id"])
             yield CatalogSet(
                 source=self.source_id,
                 source_set_id=f"{locale}:{raw['id']}",
                 name=raw.get("name", raw["id"]),
                 language=language,
                 total_cards=(raw.get("cardCount", {}) or {}).get("official") or (raw.get("cardCount", {}) or {}).get("total"),
-                release_date=raw.get("releaseDate"),
+                release_date=(detail or {}).get("releaseDate"),
                 set_code=raw.get("id"),
+                series=((detail or {}).get("serie") or {}).get("id"),
             )
+
+    def _fetch_set_detail(self, locale: str, tcgdex_set_id: str) -> dict | None:
+        """`releaseDate` and `serie` (used to filter out Pokémon TCG Pocket — see module
+        docstring) only exist here, not on the cheap set-list response `fetch_sets` starts from.
+        Returns None on a transient failure rather than raising, so one bad set doesn't abort
+        the whole catalog refresh — see `_import_from_connector` in services/jobs.py for the
+        equivalent pattern at the per-set-cards level."""
+        resp = get_with_retry(self._client, f"/{locale}/sets/{quote(tcgdex_set_id, safe='')}")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
 
     def fetch_cards(self, set_source_set_id: str) -> Iterable[CatalogCard]:
         locale, tcgdex_set_id = set_source_set_id.split(":", 1)
@@ -86,6 +113,9 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
         resp = get_with_retry(self._client, f"/{locale}/sets/{quote(tcgdex_set_id, safe='')}")
         resp.raise_for_status()
         raw_set = resp.json()
+        if (raw_set.get("serie") or {}).get("id") == "tcgp":
+            return  # Pokémon TCG Pocket (digital-only) — see module docstring; catalogued as a
+            # set for visibility, but its cards are never imported, so they never reach pricing.
         for raw in raw_set.get("cards", []):
             yield CatalogCard(
                 source=self.source_id,

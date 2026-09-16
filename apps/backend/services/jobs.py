@@ -168,13 +168,20 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[
     regularly and coverage builds evenly across the whole catalog over many runs, rather than
     the same first N cards getting polled forever while the rest never get touched.
 
-    Among "never observed yet" cards, newest sets first — not because older cards matter less,
-    but because a real run surfaced 300 consecutive polls returning zero pricing: with no
-    explicit tiebreaker, SQLite fell back to insertion order, i.e. whatever order the catalog
-    import happened to process sets in, which has nothing to do with which cards are actually
-    listed on TCGplayer/Cardmarket. Recently released cards are far likelier to have an active
-    market listing than a 25-year-old set nobody's tracking prices for, so this at least biases
-    early rotation batches toward cards likely to actually produce a price."""
+    Two lessons from a real run that came back with 300/300 zero-price cards, both addressed
+    here:
+      1. Every one of those 300 was from TCGdex's Pokémon TCG Pocket sets (serie id "tcgp") —
+         a separate digital-only mobile game TCGdex catalogs alongside the physical TCG, whose
+         cards can never have TCGplayer/Cardmarket pricing because they aren't physical objects.
+         connectors/tcgdex.py now stops importing Pocket cards at all going forward, but this
+         filter also catches any already-imported before that fix (their `sets.series` gets
+         backfilled to 'tcgp' the next time catalog import runs over them).
+      2. Among the remaining, legitimately-physical "never observed yet" cards, newest sets
+         first: with no tiebreaker at all, SQLite fell back to insertion order, which has
+         nothing to do with which cards are actually likely to be actively traded. Not a
+         complete fix on its own (see lesson 1), but recently released cards are still likelier
+         to have a live listing than an obscure 25-year-old commons run — kept as a secondary
+         bias now that Pocket cards are excluded from the pool entirely."""
     rows = conn.execute(
         """
         SELECT c.source_card_id
@@ -186,7 +193,7 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[
             WHERE source_id = 'tcgdex'
             GROUP BY card_id
         ) ps ON ps.card_id = c.id
-        WHERE c.source = 'tcgdex'
+        WHERE c.source = 'tcgdex' AND (s.series IS NULL OR s.series != 'tcgp')
         ORDER BY ps.last_observed IS NOT NULL, s.release_date DESC, ps.last_observed ASC
         LIMIT ?
         """,
