@@ -28,6 +28,7 @@ from app.scheduler import build_scheduler
 from app.secrets import delete_secret, get_secret, set_secret
 from app.ws import ConnectionManager
 from services import jobs
+from services.search import search_cards
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
@@ -162,6 +163,14 @@ def sources_status() -> list[dict]:
             """
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+@app.get("/cards/search")
+def cards_search(q: str = "", limit: int = 60) -> list[dict]:
+    """Section 11.3. Backed by the cards_fts index — works as soon as a catalog connector has
+    run, independently of whether any price data exists yet (unlike Top 100, which needs both)."""
+    with get_connection() as conn:
+        return search_cards(conn, q, limit)
 
 
 @app.get("/top100")

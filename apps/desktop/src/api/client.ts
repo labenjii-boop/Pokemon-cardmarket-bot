@@ -71,6 +71,25 @@ export function backendWsUrl(): string {
   return `ws://127.0.0.1:${BACKEND_PORT}/ws`;
 }
 
+export interface CardSearchResult {
+  id: string;
+  name: string;
+  name_en: string | null;
+  name_original: string | null;
+  number: string;
+  language: string;
+  rarity: string | null;
+  variant: string | null;
+  image_source_url: string | null;
+  set_name: string;
+  set_language: string;
+}
+
+export function searchCards(q: string, limit = 60): Promise<CardSearchResult[]> {
+  const query = new URLSearchParams({ q, limit: String(limit) });
+  return get<CardSearchResult[]>(`/cards/search?${query.toString()}`);
+}
+
 export interface ReviewQueueItem {
   id: number;
   raw_title: string;

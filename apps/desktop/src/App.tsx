@@ -2,15 +2,15 @@ import { useState } from "react";
 import { Sidebar, type ScreenId } from "./components/Sidebar";
 import { PlaceholderScreen } from "./screens/Placeholder";
 import { ReviewQueueScreen } from "./screens/ReviewQueue";
+import { SearchScreen } from "./screens/Search";
 import { SettingsScreen } from "./screens/Settings";
 import { SourceStatusScreen } from "./screens/SourceStatus";
 import { Top100Screen } from "./screens/Top100";
 
-const WIRED_SCREENS: ScreenId[] = ["top100", "sources", "review", "settings"];
+const WIRED_SCREENS: ScreenId[] = ["top100", "sources", "review", "settings", "search"];
 
 const PLACEHOLDER_PHASE: Partial<Record<ScreenId, string>> = {
   dashboard: "Phase 10",
-  search: "Phase 10",
   charts: "Phase 7",
   sales: "Phase 10",
   watchlist: "Phase 10",
@@ -28,6 +28,7 @@ function App() {
         {screen === "sources" && <SourceStatusScreen />}
         {screen === "review" && <ReviewQueueScreen />}
         {screen === "settings" && <SettingsScreen />}
+        {screen === "search" && <SearchScreen />}
         {!WIRED_SCREENS.includes(screen) && (
           <PlaceholderScreen
             title={screen[0].toUpperCase() + screen.slice(1)}
