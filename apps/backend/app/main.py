@@ -12,8 +12,15 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+
+# The frontend is a Tauri webview loading http://localhost:1420 in dev, and the app:// / tauri://
+# scheme once bundled. CORSMiddleware below only guards plain HTTP routes — browsers don't apply
+# CORS to WebSocket handshakes, so the /ws endpoint checks this same allowlist by hand (a page
+# open in an unrelated browser tab can otherwise open a WS to any localhost port and read
+# whatever it broadcasts, regardless of CORS).
+ALLOWED_ORIGINS = ["http://localhost:1420", "tauri://localhost", "http://tauri.localhost"]
 
 from app.config import settings
 from app.db import get_connection, init_db
@@ -63,11 +70,9 @@ def _stop_scheduler() -> None:
 
 app = FastAPI(title="Pokemon Card Tracker Backend", lifespan=lifespan)
 
-# The frontend is a Tauri webview loading http://localhost:1420 in dev, and the app:// / tauri://
-# scheme once bundled — both are local-only, but CORS still needs the dev origin allowed.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:1420", "tauri://localhost", "http://tauri.localhost"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -234,7 +239,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     """Pushes live price-snapshot events and Top 100 recomputation notices to the UI
     (Section 7). Connectors call `manager.broadcast(...)` from services/ingest.py as they write
     new rows; no polling on the frontend side.
+
+    Browsers don't apply CORS to WebSocket handshakes, so unlike the HTTP routes above this
+    needs its own Origin check — otherwise any page open in the user's browser could connect
+    here and read every broadcast (see ALLOWED_ORIGINS' docstring).
     """
+    origin = websocket.headers.get("origin")
+    if origin is not None and origin not in ALLOWED_ORIGINS:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await manager.connect(websocket)
     try:
         while True:
