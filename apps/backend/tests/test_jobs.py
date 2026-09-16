@@ -176,14 +176,17 @@ def test_import_catalog_survives_one_set_failing(db_conn):
     assert run["records_written"] == 1
 
 
-def _seed_tcgdex_card(conn, number: str) -> str:
+def _seed_tcgdex_card(conn, number: str, set_source_set_id: str = "en:base1", release_date: str | None = None) -> str:
     from connectors.base import CatalogCard, CatalogSet
     from services.ingest import upsert_card, upsert_set
 
-    set_id = upsert_set(conn, CatalogSet(source="tcgdex", source_set_id="en:base1", name="Base Set", language="en"))
+    set_id = upsert_set(
+        conn,
+        CatalogSet(source="tcgdex", source_set_id=set_source_set_id, name=set_source_set_id, language="en", release_date=release_date),
+    )
     return upsert_card(
         conn,
-        CatalogCard(source="tcgdex", source_card_id=f"en:base1-{number}", set_source_set_id="en:base1", name=f"Card {number}", number=number, language="en"),
+        CatalogCard(source="tcgdex", source_card_id=f"{set_source_set_id}-{number}", set_source_set_id=set_source_set_id, name=f"Card {number}", number=number, language="en"),
         set_id,
     )
 
@@ -199,6 +202,19 @@ def test_select_cards_for_tcgdex_poll_prioritizes_never_observed(db_conn):
 
     ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10)
     assert ordered == ["en:base1-2", "en:base1-1"]  # never-observed card first
+
+
+def test_select_cards_for_tcgdex_poll_prefers_newer_sets_among_never_observed(db_conn):
+    # Real regression: with no tiebreaker at all, a rotation batch of 300 came back with zero
+    # pricing on every single card — SQLite fell back to insertion order, which tracked nothing
+    # about whether a card is actually likely to have an active market listing. Newest-set-first
+    # is a much better bet than "whatever order catalog import happened to process sets in."
+    _seed_tcgdex_card(db_conn, "1", set_source_set_id="en:old-set", release_date="1999-01-09")
+    _seed_tcgdex_card(db_conn, "1", set_source_set_id="en:new-set", release_date="2026-08-01")
+    db_conn.commit()
+
+    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10)
+    assert ordered == ["en:new-set-1", "en:old-set-1"]
 
 
 def test_select_cards_for_tcgdex_poll_respects_limit(db_conn):

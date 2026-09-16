@@ -32,7 +32,10 @@ def main() -> None:
     total_written = 0
 
     with get_connection() as conn:
-        result = jobs.poll_tcgdex_price_snapshots(conn)
+        # Bigger batch than the scheduled hourly job (services/jobs.py's default 300) since this
+        # is a one-off manual run, not a recurring background poll — better to cover more ground
+        # in the one shot someone's actually sitting there watching.
+        result = jobs.poll_tcgdex_price_snapshots(conn, batch_size=800)
         print(
             f"tcgdex: polled {result.get('cards_polled', 0)} cards, "
             f"fetched {result.get('fetched', 0)}, written {result.get('written', 0)}"

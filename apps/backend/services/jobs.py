@@ -166,11 +166,20 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[
     can't cover the whole catalog — this picks a rotating batch instead: cards with no
     tcgdex-sourced snapshot yet first, then whichever were observed longest ago. Run this
     regularly and coverage builds evenly across the whole catalog over many runs, rather than
-    the same first N cards getting polled forever while the rest never get touched."""
+    the same first N cards getting polled forever while the rest never get touched.
+
+    Among "never observed yet" cards, newest sets first — not because older cards matter less,
+    but because a real run surfaced 300 consecutive polls returning zero pricing: with no
+    explicit tiebreaker, SQLite fell back to insertion order, i.e. whatever order the catalog
+    import happened to process sets in, which has nothing to do with which cards are actually
+    listed on TCGplayer/Cardmarket. Recently released cards are far likelier to have an active
+    market listing than a 25-year-old set nobody's tracking prices for, so this at least biases
+    early rotation batches toward cards likely to actually produce a price."""
     rows = conn.execute(
         """
         SELECT c.source_card_id
         FROM cards c
+        JOIN sets s ON s.id = c.set_id
         LEFT JOIN (
             SELECT card_id, MAX(observed_at) AS last_observed
             FROM price_snapshots
@@ -178,7 +187,7 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[
             GROUP BY card_id
         ) ps ON ps.card_id = c.id
         WHERE c.source = 'tcgdex'
-        ORDER BY ps.last_observed IS NOT NULL, ps.last_observed ASC
+        ORDER BY ps.last_observed IS NOT NULL, s.release_date DESC, ps.last_observed ASC
         LIMIT ?
         """,
         (limit,),
