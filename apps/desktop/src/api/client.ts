@@ -70,3 +70,58 @@ export function fetchHealth(): Promise<{ status: string; time: string }> {
 export function backendWsUrl(): string {
   return `ws://127.0.0.1:${BACKEND_PORT}/ws`;
 }
+
+export interface ReviewQueueItem {
+  id: number;
+  raw_title: string;
+  confidence: number;
+  status: string;
+  created_at: string;
+  candidate_card_id: string | null;
+  candidate_grade_id: string | null;
+  source_name: string;
+}
+
+export function fetchReviewQueue(): Promise<ReviewQueueItem[]> {
+  return get<ReviewQueueItem[]>("/review-queue");
+}
+
+async function post<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE_URL}${path}`, { method: "POST" });
+  if (!res.ok) {
+    throw new Error(`${path} failed: ${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export function confirmMatch(id: number): Promise<{ id: number; status: string }> {
+  return post(`/review-queue/${id}/confirm`);
+}
+
+export function rejectMatch(id: number): Promise<{ id: number; status: string }> {
+  return post(`/review-queue/${id}/reject`);
+}
+
+export interface LocalSettings {
+  scheduler_enabled?: boolean;
+  pokemontcg_io_api_key?: string;
+  top100_min_observations?: number;
+  top100_min_price_eur?: number;
+  [key: string]: unknown;
+}
+
+export function fetchSettings(): Promise<LocalSettings> {
+  return get<LocalSettings>("/settings");
+}
+
+export async function putSettings(payload: LocalSettings): Promise<LocalSettings> {
+  const res = await fetch(`${BASE_URL}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(`PUT /settings failed: ${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<LocalSettings>;
+}

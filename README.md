@@ -19,14 +19,28 @@ review rather than attempting the whole spec in one pass.
 
 - ✅ **Phase 1 — Research:** [`DATA_SOURCES.md`](./DATA_SOURCES.md) complete.
 - ✅ **Phase 2 — Foundation:** Tauri + React + TS + Vite + Tailwind shell; Python/FastAPI
-  backend wired as a Tauri sidecar; full SQLite schema (`apps/backend/app/schema.sql`);
-  grading companies/grades seeded as data, not code (Section 4); the first three connectors
-  (pokemontcg.io, TCGdex, ECB FX) built against the shared connector interface, with tests
-  mocking every HTTP call; a Top 100 screen and Source Status screen wired end-to-end against
-  real (currently empty) backend endpoints. 27/27 backend tests passing.
-- ⬜ **Phase 3 onward** — not started: the matching/cleaning pipeline and review queue, running
-  the scheduler and an actual backfill, the Top 100 background computation job, real-time
-  WebSocket pushes, the remaining screens, and macOS packaging. See "What's next" below.
+  backend wired as a Tauri sidecar (PyInstaller packaging verified end-to-end); full SQLite
+  schema (`apps/backend/app/schema.sql`); grading companies/grades seeded as data, not code
+  (Section 4); the first three connectors (pokemontcg.io, TCGdex, ECB FX) built against the
+  shared connector interface, with tests mocking every HTTP call.
+- ✅ **Phase 3 (adapted) — First connectors:** pokemontcg.io/TCGdex/ECB FX are already the best
+  free coverage available (DATA_SOURCES.md §0) and were built in Phase 2.
+- ✅ **Phase 4 (adapted) — Review queue:** `listing_matches` + `/review-queue` (confirm/reject)
+  exist and are wired into the UI; empty today by construction, not by omission — no connector
+  yet produces free-text listing titles that need fuzzy matching (see the screen's own
+  in-app explanation).
+- ✅ **Phase 6 (first pass) — Top 100 end-to-end:** APScheduler jobs (`apps/backend/app/scheduler.py`)
+  poll connectors, sync FX rates, and recompute `top100_snapshots`
+  (`services/top100_job.py`) on a schedule, gated behind an explicit, off-by-default
+  "background collection" setting (Section 7). Manual triggers
+  (`POST /jobs/import-catalog`, `/jobs/poll-snapshots`, `/jobs/recompute-top100`) and one-off
+  CLI scripts (`apps/backend/scripts/`) exist for the first run, so the Top 100 screen has real
+  data without waiting for the first scheduled cycle. WebSocket broadcasts fire on new
+  snapshots/recomputation. 40/40 backend tests passing.
+- ⬜ **Not yet built:** real-time WebSocket *consumption* in the frontend (events are broadcast
+  but the UI still polls on tab/range change, not yet subscribed to `/ws`), the Dashboard/
+  Search/Charts/Sales/Watchlist/Compare screens, a real 10-year backfill run, and macOS
+  packaging (the `.dmg` build itself must run on an actual Mac — see "Packaging" below).
 
 ## Prerequisites (install these on your Mac first — Section 15)
 
@@ -53,6 +67,13 @@ Verify with `node -v`, `python3 --version`, `cargo --version`.
 cd apps/backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+# first run only: seed the catalog, FX rates, and one price-snapshot poll so the Top 100
+# screen has something to show immediately, instead of waiting for the scheduler's first cycle
+python scripts/import_catalog.py
+python scripts/sync_fx.py
+python scripts/poll_snapshots.py
+
 python -m app.entrypoint            # http://127.0.0.1:8756
 
 # Terminal 2 — desktop shell
@@ -60,6 +81,9 @@ cd apps/desktop
 npm install
 npm run tauri dev                   # opens the native window, talks to the backend above
 ```
+
+Background collection (scheduled re-polling while the app runs, Section 7) is **off by
+default** — turn it on from the Settings screen, or `PUT /settings {"scheduler_enabled": true}`.
 
 (`npm run dev` alone runs just the Vite dev server in a browser tab, without the native Tauri
 window — useful for fast UI iteration; see `apps/desktop/README.md`.)
@@ -132,9 +156,19 @@ there. Nothing in the application special-cases a company or grade string.
 
 ## What's next
 
-Phase 3 (adapted) is effectively done as a byproduct of Phase 2 — the next real milestone is
-**Phase 4**: the matching/cleaning pipeline (only meaningful once real listing titles exist to
-parse; today's snapshot connectors already resolve to a specific `card_id`, so most of Phase 4's
-work is the *future* sale-listing matcher) and the review queue UI, followed by wiring
-APScheduler to actually run the connectors on a schedule and compute `top100_snapshots`
-(Phase 6, the first fully end-to-end feature).
+The core data loop (connectors → snapshots → ranking → UI) is now real and tested end-to-end.
+What's left before this is genuinely usable day-to-day:
+
+- **Frontend WebSocket subscription** — the backend already broadcasts `price_snapshots_ingested`
+  and `top100_updated` over `/ws`; the Top 100 screen doesn't listen yet, so it still requires a
+  tab switch or reload to pick up a background-collection update.
+- **A real backfill run** — `scripts/backfill_fx_history.py` exists for FX; there is no
+  analogous deep backfill for prices because none exists to backfill (DATA_SOURCES.md §0) —
+  history only accumulates from whenever polling started.
+- **Phase 7** — card detail page and full interactive charts (Lightweight Charts is installed
+  but unused so far).
+- **Phase 10** — Dashboard, Search, Sales Table, Watchlist/alerts, Compare — currently
+  placeholder screens.
+- **Phase 11** — packaging. Needs to run on an actual Mac (Apple Silicon and Intel each need
+  their own PyInstaller sidecar build — see `apps/backend/scripts/build_sidecar.py`, which has
+  been verified end-to-end on Linux and just needs the equivalent macOS run).

@@ -28,24 +28,45 @@ grading-company/grade seed data (`app/seed_grades.sql`) are applied automaticall
 pytest
 ```
 
-27 tests as of Phase 2: connector parsing against mocked HTTP responses (`respx`, never the real
-network), currency normalization, the Top 100 ranking methodology, and the DB ingest layer.
+40 tests: connector parsing against mocked HTTP responses (`respx`, never the real network),
+currency normalization, the Top 100 ranking methodology, the DB ingest layer, the background
+job functions (fx sync / catalog import / snapshot poll, each with their `connector_runs`
+bookkeeping), the Top 100 background computation, scheduler job registration, and the
+review-queue API.
 
 ## Layout
 
-- `app/` — FastAPI app, SQLite schema/bootstrap, config, the entry point.
+- `app/` — FastAPI app (`main.py`), SQLite schema/bootstrap (`db.py`, `schema.sql`,
+  `seed_grades.sql`), config (`config.py`), APScheduler wiring (`scheduler.py`), the entry point
+  (`entrypoint.py`).
 - `connectors/` — one module per data source, behind the shared interface in
   `connectors/base.py`. See `connectors/README.md` before adding a new one.
 - `services/` — logic that doesn't belong to a connector or a route: currency conversion
-  (`currency.py`), the Top 100 ranking methodology (`top100.py`), writing connector output into
-  SQLite (`ingest.py`).
-- `scripts/build_sidecar.py` — builds the PyInstaller binary the desktop shell spawns.
+  (`currency.py`), the Top 100 ranking methodology (`top100.py`) and its DB-facing job
+  (`top100_job.py`), writing connector output into SQLite (`ingest.py`), connector-run
+  bookkeeping (`connector_runs.py`), and the actual scheduled/manual job bodies (`jobs.py`).
+- `scripts/` — one-off CLI entry points for the same jobs `app/scheduler.py` runs on a timer
+  (`import_catalog.py`, `sync_fx.py`, `poll_snapshots.py`), a 10-year FX history backfill
+  (`backfill_fx_history.py`), and the PyInstaller sidecar builder (`build_sidecar.py`).
 - `tests/` — mirrors the above; `conftest.py`'s `db_conn` fixture is an in-memory SQLite DB
   with the schema and seed data pre-loaded.
 
+## Background collection
+
+`app/scheduler.py` runs three APScheduler jobs inside the FastAPI process (so they can push
+WebSocket events directly): daily FX sync, weekly catalog refresh, and a snapshot poll every 6
+hours (interval reasoning is in that file's docstring — it's a real tradeoff against
+pokemontcg.io's free-tier daily request cap). None of this starts automatically — Section 7
+asks for background collection to be an explicit, user-controlled setting, so the scheduler only
+starts when the local `scheduler_enabled` setting is true (`PUT /settings`), and can also be
+kicked off once via `POST /jobs/import-catalog`, `/jobs/poll-snapshots`, `/jobs/recompute-top100`.
+
 ## What's not here yet
 
-APScheduler wiring (recurring connector runs), the matching/cleaning pipeline (Section 8), the
-review queue, and the `/top100` background recomputation job are Phase 4/6/8 work — the schema,
-ranking methodology, and API route for Top 100 already exist so that work is additive, not a
-rewrite. See the top-level README's phase tracker.
+The matching/cleaning pipeline for free-text listing titles (Section 8) has nothing to operate
+on yet — see `DATA_SOURCES.md` §0 for why — so `listing_matches`/`/review-queue` exist and are
+wired into the UI but stay empty until a real listing-based sale connector is added. Also still
+open: a real Section-6-style backfill (there's no deep price history to backfill, only FX), the
+frontend actually subscribing to `/ws` instead of just polling on tab change, and everything in
+Phase 7/10/11 (charts, dashboard/search/watchlist, macOS packaging). See the top-level README's
+phase tracker.

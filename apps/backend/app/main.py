@@ -1,9 +1,10 @@
 """FastAPI backend, bundled as a Tauri sidecar (Section 10). Binds to localhost only.
 
-This is Phase 2 scope: enough surface for the desktop shell to boot against a real backend and
-for the Top 100 screen to be wired up end-to-end in Phase 6. Connectors, the matching/cleaning
-pipeline, and the scheduler are invoked from here but implemented in `connectors/` and
-`services/` per the swappable-module design (Section 5c rule 6).
+Connectors, the matching/cleaning pipeline, and the scheduler are invoked from here but
+implemented in `connectors/` and `services/` per the swappable-module design (Section 5c rule
+6). The scheduler (app/scheduler.py) only starts when the `scheduler_enabled` local setting is
+true — Section 7 asks background collection to be an explicit, off-by-default user choice, not
+something that just always runs the moment the app opens.
 """
 from __future__ import annotations
 
@@ -16,12 +17,15 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import get_connection, init_db
+from app.scheduler import build_scheduler
 from app.ws import ConnectionManager
+from services import jobs
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
 
 manager = ConnectionManager()
+scheduler_state: dict = {"scheduler": None}
 
 
 @asynccontextmanager
@@ -30,7 +34,31 @@ async def lifespan(app: FastAPI):
     conn = init_db()
     conn.close()
     logger.info("database ready at %s", settings.db_path)
+
+    if settings.load_local_settings().get("scheduler_enabled", False):
+        _start_scheduler()
+
     yield
+
+    if scheduler_state["scheduler"] is not None:
+        scheduler_state["scheduler"].shutdown(wait=False)
+
+
+def _start_scheduler() -> None:
+    if scheduler_state["scheduler"] is not None:
+        return
+    scheduler = build_scheduler(manager)
+    scheduler.start()
+    scheduler_state["scheduler"] = scheduler
+    logger.info("background collection scheduler started")
+
+
+def _stop_scheduler() -> None:
+    if scheduler_state["scheduler"] is None:
+        return
+    scheduler_state["scheduler"].shutdown(wait=False)
+    scheduler_state["scheduler"] = None
+    logger.info("background collection scheduler stopped")
 
 
 app = FastAPI(title="Pokemon Card Tracker Backend", lifespan=lifespan)
@@ -60,7 +88,37 @@ def put_settings(payload: dict) -> dict:
     current = settings.load_local_settings()
     current.update(payload)
     settings.save_local_settings(current)
+
+    if "scheduler_enabled" in payload:
+        if payload["scheduler_enabled"]:
+            _start_scheduler()
+        else:
+            _stop_scheduler()
+
     return current
+
+
+@app.post("/jobs/import-catalog")
+def trigger_import_catalog() -> dict:
+    """Manual trigger for the heavy one-off catalog import (Phase 2/3) — useful for the first
+    run, before the weekly scheduled refresh would otherwise pick up a new set."""
+    with get_connection() as conn:
+        return jobs.import_catalog(conn)
+
+
+@app.post("/jobs/poll-snapshots")
+def trigger_poll_snapshots() -> dict:
+    with get_connection() as conn:
+        result = jobs.poll_price_snapshots(conn)
+        if result.get("written"):
+            jobs.recompute_top100(conn)
+    return result
+
+
+@app.post("/jobs/recompute-top100")
+def trigger_recompute_top100() -> dict:
+    with get_connection() as conn:
+        return jobs.recompute_top100(conn)
 
 
 @app.get("/sources/status")
@@ -127,6 +185,48 @@ def top100(
         params.append(limit)
         rows = conn.execute(" ".join(query), params).fetchall()
         return [dict(row) for row in rows]
+
+
+@app.get("/review-queue")
+def review_queue(limit: int = 100) -> list[dict]:
+    """Section 11.10. Empty today by construction, not by bug: the connectors built so far
+    (pokemontcg.io, TCGdex) are structured APIs that resolve straight to a `card_id` — there is
+    no free-text listing title to parse, so nothing lands in `listing_matches`
+    (DATA_SOURCES.md §0). The table, this endpoint, and the matching confidence score all
+    already exist so the day a real listing-based sale connector is added (Section 8's title/
+    item-specifics parsing), its low-confidence matches have somewhere to go without a schema
+    change — only a new connector needs writing, not this endpoint.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT lm.id, lm.raw_title, lm.confidence, lm.status, lm.created_at,
+                   lm.candidate_card_id, lm.candidate_grade_id, s.name AS source_name
+            FROM listing_matches lm
+            JOIN sources s ON s.id = lm.source_id
+            WHERE lm.status = 'pending'
+            ORDER BY lm.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.post("/review-queue/{match_id}/confirm")
+def confirm_match(match_id: int) -> dict:
+    with get_connection() as conn:
+        conn.execute("UPDATE listing_matches SET status = 'confirmed' WHERE id = ?", (match_id,))
+        conn.commit()
+    return {"id": match_id, "status": "confirmed"}
+
+
+@app.post("/review-queue/{match_id}/reject")
+def reject_match(match_id: int) -> dict:
+    with get_connection() as conn:
+        conn.execute("UPDATE listing_matches SET status = 'rejected' WHERE id = ?", (match_id,))
+        conn.commit()
+    return {"id": match_id, "status": "rejected"}
 
 
 @app.websocket("/ws")
