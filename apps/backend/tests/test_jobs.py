@@ -141,3 +141,55 @@ def test_import_catalog_survives_one_set_failing(db_conn):
     ).fetchone()
     assert run["status"] == "error"  # honest: the run had a failure, even though it also made progress
     assert run["records_written"] == 1
+
+
+def _seed_tcgdex_card(conn, number: str) -> str:
+    from connectors.base import CatalogCard, CatalogSet
+    from services.ingest import upsert_card, upsert_set
+
+    set_id = upsert_set(conn, CatalogSet(source="tcgdex", source_set_id="en:base1", name="Base Set", language="en"))
+    return upsert_card(
+        conn,
+        CatalogCard(source="tcgdex", source_card_id=f"en:base1-{number}", set_source_set_id="en:base1", name=f"Card {number}", number=number, language="en"),
+        set_id,
+    )
+
+
+def test_select_cards_for_tcgdex_poll_prioritizes_never_observed(db_conn):
+    _seed_tcgdex_card(db_conn, "1")
+    _seed_tcgdex_card(db_conn, "2")
+    db_conn.execute(
+        "INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency) "
+        "VALUES ((SELECT id FROM cards WHERE source_card_id='en:base1-1'), 'raw-nm', 'tcgdex', '2026-09-01T00:00:00.000000Z', 1, 'EUR')"
+    )
+    db_conn.commit()
+
+    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10)
+    assert ordered == ["en:base1-2", "en:base1-1"]  # never-observed card first
+
+
+def test_select_cards_for_tcgdex_poll_respects_limit(db_conn):
+    for i in range(5):
+        _seed_tcgdex_card(db_conn, str(i))
+    db_conn.commit()
+    assert len(jobs._select_cards_for_tcgdex_poll(db_conn, limit=2)) == 2
+
+
+@respx.mock
+def test_poll_tcgdex_price_snapshots_ingests_and_records_run(db_conn):
+    _seed_tcgdex_card(db_conn, "4")
+    db_conn.commit()
+
+    respx.get(f"{TCGDEX_BASE_URL}/en/cards/base1-4").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "base1-4", "pricing": {"cardmarket": {"trend": 100.0}, "tcgplayer": None}},
+        )
+    )
+
+    result = jobs.poll_tcgdex_price_snapshots(db_conn, batch_size=10)
+    assert result["cards_polled"] == 1
+    assert result["written"] == 1
+
+    run = db_conn.execute("SELECT status FROM connector_runs WHERE source_id = 'tcgdex'").fetchone()
+    assert run["status"] == "ok"

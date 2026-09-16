@@ -84,11 +84,14 @@ class PokemonTcgIoConnector(CatalogConnector, SnapshotConnector):
 
     # -- SnapshotConnector ------------------------------------------------------------------
 
-    def fetch_observations(self, since: str | None = None) -> Iterable[PriceObservation]:
+    def fetch_observations(
+        self, since: str | None = None, card_ids: list[str] | None = None
+    ) -> Iterable[PriceObservation]:
         """Iterates every card and emits one market-price observation per pricing point the API
-        reports (TCGplayer 'market' price in USD, Cardmarket 'trend' price in EUR). `since` is
-        accepted for interface parity but unused: this endpoint has no incremental cursor, it
-        always returns the current price, which is exactly what a snapshot connector wants.
+        reports (TCGplayer 'market' price in USD, Cardmarket 'trend' price in EUR). `since` and
+        `card_ids` are accepted for interface parity but unused: this endpoint has no incremental
+        cursor and paging through the whole catalog is cheap here (unlike TCGdex — see
+        connectors/base.py), so a full fetch is always "everything, right now."
         """
         page = 1
         observed_at = utcnow_iso()

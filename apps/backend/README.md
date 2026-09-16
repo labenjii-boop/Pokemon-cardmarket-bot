@@ -54,10 +54,11 @@ review-queue API.
 
 ## Background collection
 
-`app/scheduler.py` runs three APScheduler jobs inside the FastAPI process (so they can push
-WebSocket events directly): daily FX sync, weekly catalog refresh, and a snapshot poll every 6
-hours (interval reasoning is in that file's docstring — it's a real tradeoff against
-pokemontcg.io's free-tier daily request cap). None of this starts automatically — Section 7
+`app/scheduler.py` runs four APScheduler jobs inside the FastAPI process (so they can push
+WebSocket events directly): daily FX sync, weekly catalog refresh, a pokemontcg.io snapshot poll
+every 6 hours, and a TCGdex snapshot poll every hour (a rotating batch of cards, not the whole
+catalog — TCGdex pricing costs one request per card, see `connectors/tcgdex.py`). Interval
+reasoning for both pollers is in that file's docstring. None of this starts automatically — Section 7
 asks for background collection to be an explicit, user-controlled setting, so the scheduler only
 starts when the local `scheduler_enabled` setting is true (`PUT /settings`), and can also be
 kicked off once via `POST /jobs/import-catalog`, `/jobs/poll-snapshots`, `/jobs/recompute-top100`.

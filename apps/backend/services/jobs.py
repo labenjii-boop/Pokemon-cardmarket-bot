@@ -143,5 +143,53 @@ def poll_price_snapshots(conn: sqlite3.Connection) -> dict:
         connector.close()
 
 
+def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[str]:
+    """TCGdex pricing costs one HTTP request per card (connectors/tcgdex.py), so a single run
+    can't cover the whole catalog — this picks a rotating batch instead: cards with no
+    tcgdex-sourced snapshot yet first, then whichever were observed longest ago. Run this
+    regularly and coverage builds evenly across the whole catalog over many runs, rather than
+    the same first N cards getting polled forever while the rest never get touched."""
+    rows = conn.execute(
+        """
+        SELECT c.source_card_id
+        FROM cards c
+        LEFT JOIN (
+            SELECT card_id, MAX(observed_at) AS last_observed
+            FROM price_snapshots
+            WHERE source_id = 'tcgdex'
+            GROUP BY card_id
+        ) ps ON ps.card_id = c.id
+        WHERE c.source = 'tcgdex'
+        ORDER BY ps.last_observed IS NOT NULL, ps.last_observed ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [row["source_card_id"] for row in rows]
+
+
+def poll_tcgdex_price_snapshots(conn: sqlite3.Connection, batch_size: int = 300) -> dict:
+    """The TCGdex counterpart to poll_price_snapshots — same idea (today's market-price
+    snapshot), different shape, because TCGdex's pricing lives on a per-card endpoint rather
+    than something pageable in bulk. See _select_cards_for_tcgdex_poll for how the batch is
+    chosen and connectors/tcgdex.py's module docstring for the API shape."""
+    run_id = start_run(conn, "tcgdex")
+    connector = TcgdexConnector()
+    try:
+        card_ids = _select_cards_for_tcgdex_poll(conn, limit=batch_size)
+        observations = list(connector.fetch_observations(card_ids=card_ids))
+        written = ingest_price_observations(conn, "tcgdex", observations)
+        conn.commit()
+        finish_run(conn, run_id, "ok", records_fetched=len(observations), records_written=written)
+        return {"cards_polled": len(card_ids), "fetched": len(observations), "written": written}
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        finish_run(conn, run_id, "error", error_message=str(exc))
+        logger.exception("tcgdex price snapshot poll failed")
+        return {"cards_polled": 0, "fetched": 0, "written": 0, "error": str(exc)}
+    finally:
+        connector.close()
+
+
 def recompute_top100(conn: sqlite3.Connection) -> dict:
     return compute_and_store_top100(conn)

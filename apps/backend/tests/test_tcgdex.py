@@ -1,4 +1,5 @@
 import httpx
+import pytest
 import respx
 
 from connectors.tcgdex import BASE_URL, TcgdexConnector
@@ -65,3 +66,68 @@ def test_fetch_cards_percent_encodes_a_plus_in_the_set_id():
     assert route.called
     assert len(cards) == 1
     assert cards[0].name == "Pikachu"
+
+
+# Trimmed down from a real GET /v2/en/cards/ecard3-146 response captured during the second live
+# run — the full response has far more fields (attacks, weaknesses, etc.) that fetch_observations
+# doesn't touch, so only the parts it reads are kept here.
+REAL_CARD_DETAIL_RESPONSE = {
+    "id": "ecard3-146",
+    "name": "Charizard",
+    "pricing": {
+        "cardmarket": {
+            "updated": "2026-09-16T13:19:49.524Z",
+            "unit": "EUR",
+            "avg": 1566.65,
+            "low": 420,
+            "trend": 3687.39,
+        },
+        "tcgplayer": {
+            "unit": "USD",
+            "updated": "2026-09-16T13:19:52.446Z",
+            "holofoil": {"lowPrice": 3500, "midPrice": 3500, "highPrice": 3500, "marketPrice": 1500, "directLowPrice": None},
+            "reverse-holofoil": {"lowPrice": 3500, "midPrice": 3500, "highPrice": 3500, "marketPrice": 2999.99, "directLowPrice": None},
+        },
+    },
+}
+
+
+@respx.mock
+def test_fetch_observations_requires_card_ids():
+    connector = TcgdexConnector()
+    with pytest.raises(ValueError):
+        list(connector.fetch_observations())
+
+
+@respx.mock
+def test_fetch_observations_parses_real_pricing_shape():
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_RESPONSE))
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:ecard3-146"]))
+
+    by_currency = {o.price_currency: [] for o in observations}
+    for o in observations:
+        by_currency[o.price_currency].append(o.price_amount)
+
+    assert by_currency["EUR"] == [3687.39]  # cardmarket 'trend', not 'avg'/'low'
+    assert sorted(by_currency["USD"]) == [1500.0, 2999.99]  # one per tcgplayer finish
+    assert all(o.card_source_id == "en:ecard3-146" for o in observations)
+
+
+@respx.mock
+def test_fetch_observations_skips_a_404_card_without_raising():
+    respx.get(f"{BASE_URL}/en/cards/gone-1").mock(return_value=httpx.Response(404))
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_RESPONSE))
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:gone-1", "en:ecard3-146"]))
+    assert all(o.card_source_id == "en:ecard3-146" for o in observations)
+
+
+@respx.mock
+def test_fetch_observations_handles_card_with_no_marketplace_listing():
+    respx.get(f"{BASE_URL}/en/cards/obscure-1").mock(
+        return_value=httpx.Response(200, json={"id": "obscure-1", "pricing": {"cardmarket": None, "tcgplayer": None}})
+    )
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:obscure-1"]))
+    assert observations == []

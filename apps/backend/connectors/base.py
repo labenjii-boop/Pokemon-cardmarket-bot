@@ -96,10 +96,20 @@ class SnapshotConnector(abc.ABC):
     source_id: str
 
     @abc.abstractmethod
-    def fetch_observations(self, since: str | None = None) -> Iterable[PriceObservation]:
+    def fetch_observations(
+        self, since: str | None = None, card_ids: list[str] | None = None
+    ) -> Iterable[PriceObservation]:
         """`since`: ISO timestamp cursor for incremental polling; None means "everything this
         source currently exposes" (there is no deep history behind these sources — see
-        DATA_SOURCES.md §0 — so a full fetch is just "today's snapshot", not a backfill)."""
+        DATA_SOURCES.md §0 — so a full fetch is just "today's snapshot", not a backfill).
+
+        `card_ids`: source_card_id values (the `cards.source_card_id` this connector itself
+        wrote) to restrict the poll to. Not every source can cheaply price "everything" in one
+        pass — pokemontcg.io ignores this and pages through its whole catalog every time,
+        because that's cheap there; TCGdex requires it, because pricing only exists on its
+        per-card detail endpoint (no bulk listing includes it), so polling the whole catalog
+        would mean one HTTP request per card. The caller (services/jobs.py) is what decides which
+        ids to pass — connectors just say what they need, they don't pick their own worklist."""
         ...
 
 

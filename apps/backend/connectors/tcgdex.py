@@ -7,13 +7,24 @@ English. Chinese coverage varies per set (see the module docstring in DATA_SOURC
 `fetch_sets` for a Chinese locale can legitimately return an empty list for a given language —
 callers must not treat that as an error.
 
-Field names were verified against a real response during the first live run (2026-09):
+Field names were verified against real responses during the first live run (2026-09):
 `GET /v2/ja/sets` returns e.g. `{"id":"neo1","name":"...","cardCount":{"total":96,"official":96}}`
 — matching what this module already parsed. The one real bug that first run surfaced: some set
 ids contain a literal `+` (e.g. the real Japanese set `SM1+`), which needs percent-encoding
 before going into a URL path — see `quote()` in `fetch_cards` below. An unencoded `+` 404s
 against TCGdex's API even though a literal `+` is technically legal in a URL path per RFC 3986;
 their server evidently decodes it as a space before route-matching.
+
+Pricing (used by `fetch_observations` below) only appears on the per-card detail endpoint
+(`GET /v2/{lang}/cards/{id}`) — the brief per-card entries returned inside a set listing (what
+`fetch_cards` reads) are just `{id, image, localId, name}`, no pricing. A real per-card response
+looks like:
+    "pricing": {
+      "cardmarket": {"unit": "EUR", "trend": 3687.39, "avg": 1566.65, "low": 420, ...},
+      "tcgplayer": {"unit": "USD", "holofoil": {"marketPrice": 1500, ...}, "reverse-holofoil": {...}}
+    }
+`cardmarket`/`tcgplayer` (or the whole `pricing` object) can be missing/null when a card isn't
+listed on that marketplace — treated as "no observation from that source," not an error.
 """
 from __future__ import annotations
 
@@ -23,7 +34,7 @@ from urllib.parse import quote
 import httpx
 
 from connectors._retry import get_with_retry
-from connectors.base import CatalogCard, CatalogConnector, CatalogSet
+from connectors.base import CatalogCard, CatalogConnector, CatalogSet, PriceObservation, SnapshotConnector, utcnow_iso
 
 BASE_URL = "https://api.tcgdex.net/v2"
 
@@ -36,7 +47,7 @@ LANGUAGE_TO_TCGDEX = {
 }
 
 
-class TcgdexConnector(CatalogConnector):
+class TcgdexConnector(CatalogConnector, SnapshotConnector):
     source_id = "tcgdex"
 
     def __init__(self, client: httpx.Client | None = None):
@@ -84,6 +95,60 @@ class TcgdexConnector(CatalogConnector):
                 rarity=raw.get("rarity"),
                 variant=_infer_variant(raw),
                 image_source_url=raw.get("image"),
+            )
+
+    # -- SnapshotConnector ------------------------------------------------------------------
+
+    def fetch_observations(
+        self, since: str | None = None, card_ids: list[str] | None = None
+    ) -> Iterable[PriceObservation]:
+        """Pricing only lives on the per-card detail endpoint (see module docstring) — one
+        request per id in `card_ids`, so unlike pokemontcg.io this can't cheaply do "everything."
+        `card_ids` is required, not optional in practice; services/jobs.py is what decides which
+        ids to pass (a rotating batch — see its module docstring for why)."""
+        if not card_ids:
+            raise ValueError(
+                "TcgdexConnector.fetch_observations requires card_ids: pricing only exists on "
+                "the per-card detail endpoint, so there is no cheap 'fetch everything' here."
+            )
+        observed_at = utcnow_iso()
+        for source_card_id in card_ids:
+            locale, tcgdex_id = source_card_id.split(":", 1)
+            resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
+            if resp.status_code == 404:
+                continue  # card id we catalogued no longer resolves upstream — skip, not fatal
+            resp.raise_for_status()
+            yield from _observations_from_card_detail(source_card_id, resp.json(), observed_at)
+
+
+def _observations_from_card_detail(source_card_id: str, raw: dict, observed_at: str) -> Iterable[PriceObservation]:
+    pricing = raw.get("pricing") or {}
+
+    cardmarket = pricing.get("cardmarket") or {}
+    trend = cardmarket.get("trend")
+    if trend is not None:
+        yield PriceObservation(
+            source="tcgdex",
+            card_source_id=source_card_id,
+            observed_at=observed_at,
+            price_amount=float(trend),
+            price_currency="EUR",
+            price_kind="market",
+        )
+
+    tcgplayer = pricing.get("tcgplayer") or {}
+    for finish, prices in tcgplayer.items():
+        if not isinstance(prices, dict):
+            continue  # 'unit'/'updated' are sibling string fields alongside the per-finish dicts
+        market = prices.get("marketPrice")
+        if market is not None:
+            yield PriceObservation(
+                source="tcgdex",
+                card_source_id=source_card_id,
+                observed_at=observed_at,
+                price_amount=float(market),
+                price_currency="USD",
+                price_kind="market",
             )
 
 
