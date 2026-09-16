@@ -20,7 +20,7 @@ export interface Top100Entry {
   name_en: string | null;
   number: string;
   language: string;
-  image_local_path: string | null;
+  image_source_url: string | null;
   grade_label: string;
   grading_company: string;
 }
@@ -151,4 +151,33 @@ export async function putSettings(payload: LocalSettingsPatch): Promise<LocalSet
     throw new Error(`PUT /settings failed: ${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<LocalSettings>;
+}
+
+export interface CardDetail {
+  id: string;
+  name: string;
+  name_en: string | null;
+  name_original: string | null;
+  number: string;
+  language: string;
+  rarity: string | null;
+  variant: string | null;
+  image_source_url: string | null;
+  set_name: string;
+  set_language: string;
+}
+
+export interface CardPricePoint {
+  observed_at: string;
+  price_eur: number;
+  grade_id: string;
+  source_id: string;
+}
+
+export function fetchCard(cardId: string): Promise<CardDetail> {
+  return get<CardDetail>(`/cards/${encodeURIComponent(cardId)}`);
+}
+
+export function fetchCardPrices(cardId: string, timeRange: TimeRange): Promise<CardPricePoint[]> {
+  return get<CardPricePoint[]>(`/cards/${encodeURIComponent(cardId)}/prices?time_range=${timeRange}`);
 }

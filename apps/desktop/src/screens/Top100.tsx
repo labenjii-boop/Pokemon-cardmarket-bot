@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchTop100, type SortKey, type TimeRange, type Top100Entry } from "../api/client";
+import { CardImage } from "../components/CardImage";
 
 const TIME_RANGES: TimeRange[] = ["1D", "7D", "30D", "6M", "1Y"];
 const SORT_OPTIONS: { key: SortKey; label: string }[] = [
@@ -25,7 +26,7 @@ function ChangeBadge({ pct, abs }: { pct: number; abs: number }) {
   );
 }
 
-export function Top100Screen() {
+export function Top100Screen({ onSelectCard }: { onSelectCard: (cardId: string) => void }) {
   const [timeRange, setTimeRange] = useState<TimeRange>("7D");
   const [sortKey, setSortKey] = useState<SortKey>("change_pct");
   const [entries, setEntries] = useState<Top100Entry[]>([]);
@@ -104,6 +105,7 @@ export function Top100Screen() {
           <thead className="sticky top-0 bg-[var(--color-surface-raised)] text-[var(--color-text-muted)]">
             <tr>
               <th className="px-3 py-2">#</th>
+              <th className="px-3 py-2" />
               <th className="px-3 py-2">Card</th>
               <th className="px-3 py-2">Grade</th>
               <th className="px-3 py-2">Start</th>
@@ -116,9 +118,15 @@ export function Top100Screen() {
             {entries.map((entry) => (
               <tr
                 key={`${entry.card_id}-${entry.grade_id}`}
-                className="border-t border-[var(--color-border)] hover:bg-[var(--color-surface)]"
+                onClick={() => onSelectCard(entry.card_id)}
+                className="cursor-pointer border-t border-[var(--color-border)] hover:bg-[var(--color-surface)]"
               >
                 <td className="px-3 py-2 text-[var(--color-text-muted)]">{entry.rank}</td>
+                <td className="px-3 py-2">
+                  <div className="h-14 w-10 overflow-hidden rounded bg-[var(--color-surface-raised)]">
+                    <CardImage src={entry.image_source_url} alt={entry.name} quality="low" className="h-full w-full object-cover" />
+                  </div>
+                </td>
                 <td className="px-3 py-2">
                   {entry.name} <span className="text-[var(--color-text-muted)]">#{entry.number}</span>
                 </td>

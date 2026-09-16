@@ -12,7 +12,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 
 # The frontend is a Tauri webview loading http://localhost:1420 in dev, and the app:// / tauri://
@@ -29,6 +29,8 @@ from app.secrets import delete_secret, get_secret, set_secret
 from app.ws import ConnectionManager
 from services import jobs
 from services.search import search_cards
+from services.top100 import TIME_RANGE_TO_TIMEDELTA, period_for_range
+from services.top100_job import format_query_bound
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend")
@@ -173,6 +175,46 @@ def cards_search(q: str = "", limit: int = 60) -> list[dict]:
         return search_cards(conn, q, limit)
 
 
+@app.get("/cards/{card_id}")
+def get_card(card_id: str) -> dict:
+    """Section 11.4 (card detail page) header info — name, image, set, language, etc."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT c.id, c.name, c.name_en, c.name_original, c.number, c.language, c.rarity,
+                   c.variant, c.image_source_url, s.name AS set_name, s.language AS set_language
+            FROM cards c
+            JOIN sets s ON s.id = c.set_id
+            WHERE c.id = ?
+            """,
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="card not found")
+        return dict(row)
+
+
+@app.get("/cards/{card_id}/prices")
+def get_card_prices(card_id: str, time_range: str = "30D") -> list[dict]:
+    """Section 11.4/11.5: the raw series the card detail page's interactive chart plots. Every
+    price_snapshots row for this card in the range (across sources/grades — today that's just
+    the ungraded 'raw-nm' market-price snapshots, see DATA_SOURCES.md §0), oldest first."""
+    if time_range not in TIME_RANGE_TO_TIMEDELTA:
+        raise HTTPException(status_code=400, detail=f"time_range must be one of {sorted(TIME_RANGE_TO_TIMEDELTA)}")
+    period_start, period_end = period_for_range(time_range, datetime.now(timezone.utc))
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT observed_at, price_eur, grade_id, source_id
+            FROM price_snapshots
+            WHERE card_id = ? AND observed_at BETWEEN ? AND ? AND price_eur IS NOT NULL
+            ORDER BY observed_at ASC
+            """,
+            (card_id, format_query_bound(period_start), format_query_bound(period_end)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 @app.get("/top100")
 def top100(
     time_range: str = "7D",
@@ -193,7 +235,7 @@ def top100(
             """
             SELECT t.rank, t.card_id, t.grade_id, t.start_price_eur, t.end_price_eur,
                    t.change_pct, t.change_abs_eur, t.observation_count,
-                   c.name, c.name_en, c.number, c.language, c.image_local_path,
+                   c.name, c.name_en, c.number, c.language, c.image_source_url,
                    g.label AS grade_label, gc.name AS grading_company
             FROM top100_snapshots t
             JOIN cards c ON c.id = t.card_id

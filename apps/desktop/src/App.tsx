@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Sidebar, type ScreenId } from "./components/Sidebar";
+import { CardDetailScreen } from "./screens/CardDetail";
 import { PlaceholderScreen } from "./screens/Placeholder";
 import { ReviewQueueScreen } from "./screens/ReviewQueue";
 import { SearchScreen } from "./screens/Search";
@@ -19,21 +20,36 @@ const PLACEHOLDER_PHASE: Partial<Record<ScreenId, string>> = {
 
 function App() {
   const [screen, setScreen] = useState<ScreenId>("top100");
+  // A selected card overlays whichever screen is active (Section 2/11.3: "Click → opens the
+  // full card detail page") rather than being its own sidebar entry — it's reached from Top 100
+  // or Search, not navigated to directly.
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+
+  const selectScreen = (id: ScreenId) => {
+    setSelectedCardId(null);
+    setScreen(id);
+  };
 
   return (
     <div className="flex h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
-      <Sidebar active={screen} onSelect={setScreen} />
+      <Sidebar active={screen} onSelect={selectScreen} />
       <main className="flex-1 overflow-auto">
-        {screen === "top100" && <Top100Screen />}
-        {screen === "sources" && <SourceStatusScreen />}
-        {screen === "review" && <ReviewQueueScreen />}
-        {screen === "settings" && <SettingsScreen />}
-        {screen === "search" && <SearchScreen />}
-        {!WIRED_SCREENS.includes(screen) && (
-          <PlaceholderScreen
-            title={screen[0].toUpperCase() + screen.slice(1)}
-            phase={PLACEHOLDER_PHASE[screen] ?? "a later phase"}
-          />
+        {selectedCardId ? (
+          <CardDetailScreen cardId={selectedCardId} onBack={() => setSelectedCardId(null)} />
+        ) : (
+          <>
+            {screen === "top100" && <Top100Screen onSelectCard={setSelectedCardId} />}
+            {screen === "sources" && <SourceStatusScreen />}
+            {screen === "review" && <ReviewQueueScreen />}
+            {screen === "settings" && <SettingsScreen />}
+            {screen === "search" && <SearchScreen onSelectCard={setSelectedCardId} />}
+            {!WIRED_SCREENS.includes(screen) && (
+              <PlaceholderScreen
+                title={screen[0].toUpperCase() + screen.slice(1)}
+                phase={PLACEHOLDER_PHASE[screen] ?? "a later phase"}
+              />
+            )}
+          </>
         )}
       </main>
     </div>

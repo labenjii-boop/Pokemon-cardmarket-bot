@@ -28,7 +28,7 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def _format_bound(dt: datetime) -> str:
+def format_query_bound(dt: datetime) -> str:
     """Formats a query boundary to match exactly how observed_at is written to the DB
     (utcnow_iso(), '...ffffffZ'). SQLite's BETWEEN on these columns is a plain string
     comparison — `datetime.isoformat()` would emit '+00:00' instead of 'Z', and comparing a
@@ -54,7 +54,7 @@ def load_card_series(
         WHERE observed_at BETWEEN ? AND ? AND price_eur IS NOT NULL
         ORDER BY card_id, grade_id, observed_at
         """,
-        (_format_bound(period_start), _format_bound(period_end)),
+        (format_query_bound(period_start), format_query_bound(period_end)),
     ).fetchall()
 
     grouped: dict[tuple[str, str], list[Observation]] = defaultdict(list)

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { searchCards, type CardSearchResult } from "../api/client";
+import { CardImage } from "../components/CardImage";
 
 const LANGUAGE_LABEL: Record<string, string> = {
   en: "English",
@@ -8,7 +9,7 @@ const LANGUAGE_LABEL: Record<string, string> = {
   "zh-cn": "Chinese (Simplified)",
 };
 
-export function SearchScreen() {
+export function SearchScreen({ onSelectCard }: { onSelectCard: (cardId: string) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CardSearchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +31,8 @@ export function SearchScreen() {
       <h1 className="mb-1 text-xl font-semibold">Search</h1>
       <p className="mb-4 text-sm text-[var(--color-text-muted)]">
         Searches whatever's currently in the catalog — this works as soon as a catalog connector
-        has run, independently of price data (see Source Status if this looks empty).
+        has run, independently of price data (see Source Status if this looks empty). Click a
+        card to see its price chart.
       </p>
       <input
         type="text"
@@ -53,32 +55,14 @@ export function SearchScreen() {
 
       <div className="grid flex-1 auto-rows-min grid-cols-2 gap-3 overflow-auto sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
         {results.map((card) => (
-          <div
+          <button
+            type="button"
             key={card.id}
-            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-2"
+            onClick={() => onSelectCard(card.id)}
+            className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-2 text-left hover:border-[var(--color-accent)]"
           >
             <div className="mb-2 aspect-[5/7] overflow-hidden rounded bg-[var(--color-surface-raised)]">
-              {card.image_source_url && (
-                <img
-                  // TCGdex's `image` field is a base path with no quality/format suffix — the
-                  // actual asset lives at "<base>/<quality>.<ext>" (Section 10: "Image storage:
-                  // local folder cache" will replace this hotlinking with a real download +
-                  // cache later; for now this talks straight to TCGdex's CDN). webp first
-                  // (their documented default), falling back to png once, since not every
-                  // quality/format combination is guaranteed to exist for every card.
-                  src={`${card.image_source_url}/high.webp`}
-                  onError={(e) => {
-                    const img = e.currentTarget;
-                    if (img.dataset.fallback !== "1") {
-                      img.dataset.fallback = "1";
-                      img.src = `${card.image_source_url}/high.png`;
-                    }
-                  }}
-                  alt={card.name}
-                  className="h-full w-full object-cover"
-                  loading="lazy"
-                />
-              )}
+              <CardImage src={card.image_source_url} alt={card.name} className="h-full w-full object-cover" />
             </div>
             <div className="truncate text-sm font-medium">{card.name}</div>
             <div className="truncate text-xs text-[var(--color-text-muted)]">
@@ -87,7 +71,7 @@ export function SearchScreen() {
             <div className="text-xs text-[var(--color-text-muted)]">
               {LANGUAGE_LABEL[card.language] ?? card.language}
             </div>
-          </div>
+          </button>
         ))}
       </div>
     </div>
