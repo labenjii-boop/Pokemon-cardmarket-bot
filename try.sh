@@ -30,9 +30,13 @@ pip install -q -r requirements.txt
 
 if [ ! -f .seeded ]; then
   echo "==> First run: loading the card catalog, exchange rates, and today's prices (a few minutes, one time only)..."
-  python scripts/import_catalog.py
-  python scripts/sync_fx.py
-  python scripts/poll_snapshots.py
+  # Real-world data sources sometimes partially fail (a flaky set, a rate-limited request) —
+  # that shouldn't block you from seeing the app at all, so these don't stop the script even if
+  # they exit non-zero. Whatever did load is still there; you can re-run just these three lines
+  # yourself later to fill in the rest.
+  python scripts/import_catalog.py || echo "   (catalog import hit some errors above — continuing anyway)"
+  python scripts/sync_fx.py || echo "   (fx sync hit an error above — continuing anyway)"
+  python scripts/poll_snapshots.py || echo "   (price snapshot poll hit an error above — continuing anyway)"
   touch .seeded
 fi
 
