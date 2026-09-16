@@ -59,7 +59,7 @@ def test_poll_price_snapshots_ingests_and_records_run(db_conn):
 
     respx.get(f"{PK_BASE_URL}/cards").mock(
         side_effect=[
-            httpx.Response(200, json={"data": [{"id": "base1-4", "tcgplayer": {"prices": {"holofoil": {"market": 250.0}}}}]}),
+            httpx.Response(200, json={"data": [{"id": "base1-4", "cardmarket": {"prices": {"trendPrice": 210.5}}}]}),
             httpx.Response(200, json={"data": []}),
         ]
     )
@@ -89,7 +89,7 @@ def test_poll_price_snapshots_keeps_earlier_pages_after_a_later_page_fails(db_co
 
     respx.get(f"{PK_BASE_URL}/cards").mock(
         side_effect=[
-            httpx.Response(200, json={"data": [{"id": "base1-4", "tcgplayer": {"prices": {"holofoil": {"market": 250.0}}}}]}),
+            httpx.Response(200, json={"data": [{"id": "base1-4", "cardmarket": {"prices": {"trendPrice": 210.5}}}]}),
             httpx.Response(500),
             httpx.Response(500),
             httpx.Response(500),  # get_with_retry exhausts its attempts and raises

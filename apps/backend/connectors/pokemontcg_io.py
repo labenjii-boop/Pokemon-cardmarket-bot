@@ -123,21 +123,14 @@ def _infer_variant(raw: dict) -> str | None:
 
 
 def _observations_from_card(raw: dict, observed_at: str) -> Iterable[PriceObservation]:
+    """Yields at most ONE observation per card per poll — see the near-identical fix and full
+    explanation in connectors/tcgdex.py's _observations_from_card_detail: `tcgplayer.prices`
+    breaks its price down per print variant (holofoil, reverseHolofoil, etc — separate physical
+    products), and looping over all of them used to emit several conflicting "market price"
+    observations for the same card_id at the same instant. Cardmarket's single trendPrice avoids
+    that ambiguity and matches this app's own EUR/DKK display currency (Section 1)."""
     card_id = raw["id"]
-    tcgplayer = (raw.get("tcgplayer") or {}).get("prices") or {}
-    for _finish, prices in tcgplayer.items():
-        market = prices.get("market")
-        if market is not None:
-            yield PriceObservation(
-                source="pokemontcg_io",
-                card_source_id=card_id,
-                observed_at=observed_at,
-                price_amount=float(market),
-                price_currency="USD",
-                price_kind="market",
-            )
-    cardmarket = (raw.get("cardmarket") or {}).get("prices") or {}
-    trend = cardmarket.get("trendPrice")
+    trend = ((raw.get("cardmarket") or {}).get("prices") or {}).get("trendPrice")
     if trend is not None:
         yield PriceObservation(
             source="pokemontcg_io",

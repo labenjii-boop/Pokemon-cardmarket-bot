@@ -161,10 +161,20 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
 
 
 def _observations_from_card_detail(source_card_id: str, raw: dict, observed_at: str) -> Iterable[PriceObservation]:
-    pricing = raw.get("pricing") or {}
-
-    cardmarket = pricing.get("cardmarket") or {}
-    trend = cardmarket.get("trend")
+    """Yields at most ONE observation per card per poll — a real bug surfaced by a live chart
+    that looked like noise instead of a trend: `pricing.tcgplayer` breaks its price down *per
+    print variant* (e.g. "holofoil", "reverse-holofoil" can both exist for the same card id, as
+    separate physical products with genuinely different values), and the original code emitted
+    one PriceObservation per variant, all stamped with the same observed_at and all landing in
+    the same ungraded 'raw-nm' bucket for this one `card_id` — three or more conflicting prices
+    at the same instant, exactly the kind of outlier-prone signal Section 2 asks the app to
+    resist, not manufacture. Our catalog doesn't model print variants as separate rows (a
+    card_id is one row), so there's no correct per-variant destination to split them into yet;
+    until there is, Cardmarket's `trend` is used because it's already a single, unambiguous
+    number per card — no variant-picking heuristic needed — and EUR is this app's own display
+    currency (Section 1), unlike TCGplayer's USD breakdown.
+    """
+    trend = ((raw.get("pricing") or {}).get("cardmarket") or {}).get("trend")
     if trend is not None:
         yield PriceObservation(
             source="tcgdex",
@@ -174,21 +184,6 @@ def _observations_from_card_detail(source_card_id: str, raw: dict, observed_at: 
             price_currency="EUR",
             price_kind="market",
         )
-
-    tcgplayer = pricing.get("tcgplayer") or {}
-    for finish, prices in tcgplayer.items():
-        if not isinstance(prices, dict):
-            continue  # 'unit'/'updated' are sibling string fields alongside the per-finish dicts
-        market = prices.get("marketPrice")
-        if market is not None:
-            yield PriceObservation(
-                source="tcgdex",
-                card_source_id=source_card_id,
-                observed_at=observed_at,
-                price_amount=float(market),
-                price_currency="USD",
-                price_kind="market",
-            )
 
 
 def _infer_variant(raw: dict) -> str | None:

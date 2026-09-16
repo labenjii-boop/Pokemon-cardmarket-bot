@@ -54,7 +54,11 @@ def test_fetch_cards_maps_fields():
 
 
 @respx.mock
-def test_fetch_observations_emits_tcgplayer_and_cardmarket_points():
+def test_fetch_observations_emits_only_the_cardmarket_trend_point():
+    # Real bug: tcgplayer.prices breaks price down per print variant (holofoil, reverse-holofoil,
+    # etc — separate physical products). Looping over all of them used to emit multiple
+    # conflicting "market price" points for the same card_id at the same instant. Only
+    # Cardmarket's single trendPrice is unambiguous.
     respx.get(f"{BASE_URL}/cards").mock(
         side_effect=[
             httpx.Response(
@@ -63,7 +67,7 @@ def test_fetch_observations_emits_tcgplayer_and_cardmarket_points():
                     "data": [
                         {
                             "id": "base1-4",
-                            "tcgplayer": {"prices": {"holofoil": {"market": 250.0}}},
+                            "tcgplayer": {"prices": {"holofoil": {"market": 250.0}, "reverseHolofoil": {"market": 300.0}}},
                             "cardmarket": {"prices": {"trendPrice": 210.5}},
                         }
                     ]
@@ -74,7 +78,7 @@ def test_fetch_observations_emits_tcgplayer_and_cardmarket_points():
     )
     connector = PokemonTcgIoConnector()
     observations = list(connector.fetch_observations())
-    assert len(observations) == 2
-    currencies = {o.price_currency for o in observations}
-    assert currencies == {"USD", "EUR"}
-    assert all(o.is_transaction is False for o in observations)
+    assert len(observations) == 1
+    assert observations[0].price_currency == "EUR"
+    assert observations[0].price_amount == 210.5
+    assert observations[0].is_transaction is False

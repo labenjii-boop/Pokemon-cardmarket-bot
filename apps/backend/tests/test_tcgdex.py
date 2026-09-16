@@ -150,13 +150,22 @@ def test_fetch_observations_parses_real_pricing_shape():
     connector = TcgdexConnector()
     observations = list(connector.fetch_observations(card_ids=["en:ecard3-146"]))
 
-    by_currency = {o.price_currency: [] for o in observations}
-    for o in observations:
-        by_currency[o.price_currency].append(o.price_amount)
+    assert len(observations) == 1
+    assert observations[0].price_currency == "EUR"
+    assert observations[0].price_amount == 3687.39  # cardmarket 'trend', not 'avg'/'low'
+    assert observations[0].card_source_id == "en:ecard3-146"
 
-    assert by_currency["EUR"] == [3687.39]  # cardmarket 'trend', not 'avg'/'low'
-    assert sorted(by_currency["USD"]) == [1500.0, 2999.99]  # one per tcgplayer finish
-    assert all(o.card_source_id == "en:ecard3-146" for o in observations)
+
+@respx.mock
+def test_fetch_observations_emits_only_one_point_even_with_multiple_tcgplayer_finishes():
+    # Real bug from a live chart that looked like noise: REAL_CARD_DETAIL_RESPONSE's tcgplayer
+    # block has two finishes (holofoil, reverse-holofoil) with different marketPrice values —
+    # both used to become separate, conflicting "market price" observations for the same card
+    # at the same instant.
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_RESPONSE))
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:ecard3-146"]))
+    assert len(observations) == 1
 
 
 @respx.mock
