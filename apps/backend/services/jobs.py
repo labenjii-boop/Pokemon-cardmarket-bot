@@ -12,7 +12,7 @@ import logging
 import sqlite3
 from datetime import date, timedelta
 
-from app.config import settings
+from app.secrets import get_secret
 from connectors.ecb_fx import EcbFxConnector
 from connectors.pokemontcg_io import PokemonTcgIoConnector
 from connectors.tcgdex import TcgdexConnector
@@ -56,7 +56,7 @@ def import_catalog(conn: sqlite3.Connection) -> dict:
     (Section 13 Phase 2/3) — new sets appear a handful of times a year, not daily."""
     totals = {"pokemontcg_io": 0, "tcgdex": 0, "errors": []}
 
-    api_key = settings.load_local_settings().get("pokemontcg_io_api_key")
+    api_key = get_secret("pokemontcg_io_api_key")
     pk_connector = PokemonTcgIoConnector(api_key=api_key)
     run_id = start_run(conn, "pokemontcg_io")
     try:
@@ -107,7 +107,7 @@ def poll_price_snapshots(conn: sqlite3.Connection) -> dict:
     (DATA_SOURCES.md §0). Run interval is a tradeoff against pokemontcg.io's free-tier daily
     request cap — see app/scheduler.py's module docstring for the reasoning behind the default."""
     run_id = start_run(conn, "pokemontcg_io")
-    api_key = settings.load_local_settings().get("pokemontcg_io_api_key")
+    api_key = get_secret("pokemontcg_io_api_key")
     connector = PokemonTcgIoConnector(api_key=api_key)
     try:
         observations = list(connector.fetch_observations())

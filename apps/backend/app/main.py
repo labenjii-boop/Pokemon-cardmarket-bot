@@ -25,6 +25,7 @@ ALLOWED_ORIGINS = ["http://localhost:1420", "tauri://localhost", "http://tauri.l
 from app.config import settings
 from app.db import get_connection, init_db
 from app.scheduler import build_scheduler
+from app.secrets import delete_secret, get_secret, set_secret
 from app.ws import ConnectionManager
 from services import jobs
 
@@ -83,13 +84,32 @@ def health() -> dict:
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
 
 
+# Settings keys that hold a secret: stored in the macOS Keychain via app/secrets.py, never in
+# the plaintext local settings file. GET never echoes the value back — only whether one is set —
+# so a secret typed once doesn't keep coming back over the local HTTP API on every read.
+SECRET_SETTINGS_KEYS = ("pokemontcg_io_api_key",)
+
+
 @app.get("/settings")
 def get_settings() -> dict:
-    return settings.load_local_settings()
+    current = settings.load_local_settings()
+    for key in SECRET_SETTINGS_KEYS:
+        current.pop(key, None)  # drop any leftover value from before the Keychain migration
+        current[f"{key}_set"] = get_secret(key) is not None
+    return current
 
 
 @app.put("/settings")
 def put_settings(payload: dict) -> dict:
+    payload = dict(payload)
+    for key in SECRET_SETTINGS_KEYS:
+        if key in payload:
+            value = payload.pop(key)
+            if value:
+                set_secret(key, value)
+            else:
+                delete_secret(key)
+
     current = settings.load_local_settings()
     current.update(payload)
     settings.save_local_settings(current)
@@ -100,7 +120,7 @@ def put_settings(payload: dict) -> dict:
         else:
             _stop_scheduler()
 
-    return current
+    return get_settings()
 
 
 @app.post("/jobs/import-catalog")

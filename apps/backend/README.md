@@ -37,8 +37,9 @@ review-queue API.
 ## Layout
 
 - `app/` — FastAPI app (`main.py`), SQLite schema/bootstrap (`db.py`, `schema.sql`,
-  `seed_grades.sql`), config (`config.py`), APScheduler wiring (`scheduler.py`), the entry point
-  (`entrypoint.py`).
+  `seed_grades.sql`), non-secret config (`config.py`), macOS Keychain access for the one secret
+  setting that exists so far, the pokemontcg.io API key (`secrets.py`, via the `keyring`
+  package), APScheduler wiring (`scheduler.py`), the entry point (`entrypoint.py`).
 - `connectors/` — one module per data source, behind the shared interface in
   `connectors/base.py`. See `connectors/README.md` before adding a new one.
 - `services/` — logic that doesn't belong to a connector or a route: currency conversion

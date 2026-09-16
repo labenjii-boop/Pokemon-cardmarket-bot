@@ -102,19 +102,27 @@ export function rejectMatch(id: number): Promise<{ id: number; status: string }>
   return post(`/review-queue/${id}/reject`);
 }
 
+// GET never returns a stored secret's value (only whether one is set) — it lives in the macOS
+// Keychain, not the plaintext settings file, and the backend doesn't echo it back over local
+// HTTP on every read. PUT is write-only for it: send a new value to store one, an empty string
+// to clear it, or omit the field entirely to leave it untouched.
 export interface LocalSettings {
   scheduler_enabled?: boolean;
-  pokemontcg_io_api_key?: string;
+  pokemontcg_io_api_key_set?: boolean;
   top100_min_observations?: number;
   top100_min_price_eur?: number;
   [key: string]: unknown;
+}
+
+export interface LocalSettingsPatch extends Omit<LocalSettings, "pokemontcg_io_api_key_set"> {
+  pokemontcg_io_api_key?: string;
 }
 
 export function fetchSettings(): Promise<LocalSettings> {
   return get<LocalSettings>("/settings");
 }
 
-export async function putSettings(payload: LocalSettings): Promise<LocalSettings> {
+export async function putSettings(payload: LocalSettingsPatch): Promise<LocalSettings> {
   const res = await fetch(`${BASE_URL}/settings`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },

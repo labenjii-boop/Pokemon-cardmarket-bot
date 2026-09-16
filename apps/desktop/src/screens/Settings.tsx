@@ -1,27 +1,38 @@
 import { useEffect, useState } from "react";
-import { fetchSettings, putSettings, type LocalSettings } from "../api/client";
+import { fetchSettings, putSettings, type LocalSettings, type LocalSettingsPatch } from "../api/client";
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<LocalSettings>({});
+  const [apiKeyInput, setApiKeyInput] = useState("");
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const reloadSettings = () => fetchSettings().then(setSettings).catch((err: Error) => setError(err.message));
+
   useEffect(() => {
-    fetchSettings()
-      .then(setSettings)
-      .catch((err: Error) => setError(err.message));
+    reloadSettings();
   }, []);
 
-  const save = async (patch: LocalSettings) => {
-    const next = { ...settings, ...patch };
-    setSettings(next);
+  const save = async (patch: LocalSettingsPatch) => {
     try {
-      await putSettings(patch);
+      const next = await putSettings(patch);
+      setSettings(next);
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (err) {
       setError((err as Error).message);
     }
+  };
+
+  const saveApiKey = async () => {
+    if (!apiKeyInput) return; // blank input on blur means "didn't type anything," not "clear it"
+    await save({ pokemontcg_io_api_key: apiKeyInput });
+    setApiKeyInput("");
+  };
+
+  const clearApiKey = async () => {
+    await save({ pokemontcg_io_api_key: "" });
+    setApiKeyInput("");
   };
 
   return (
@@ -48,19 +59,31 @@ export function SettingsScreen() {
       </div>
 
       <div className="mb-6 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-        <label className="block">
-          <div className="mb-1 font-medium">Pokémon TCG API key (optional)</div>
-          <div className="mb-2 text-sm text-[var(--color-text-muted)]">
-            Raises the pokemontcg.io free rate limit from 1,000 to 20,000 requests/day. Get one
-            at pokemontcg.io — see DATA_SOURCES.md §5.
-          </div>
+        <div className="mb-1 font-medium">Pokémon TCG API key (optional)</div>
+        <div className="mb-2 text-sm text-[var(--color-text-muted)]">
+          Raises the pokemontcg.io free rate limit from 1,000 to 20,000 requests/day. Get one at
+          pokemontcg.io — see DATA_SOURCES.md §5. Stored in the macOS Keychain, not in a file —
+          this screen never shows the key back once saved.
+        </div>
+        <div className="flex items-center gap-2">
           <input
             type="password"
-            defaultValue={settings.pokemontcg_io_api_key ?? ""}
-            onBlur={(e) => save({ pokemontcg_io_api_key: e.target.value })}
-            className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1"
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            onBlur={saveApiKey}
+            placeholder={settings.pokemontcg_io_api_key_set ? "•••••••••••••• (set)" : "not set"}
+            className="flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1"
           />
-        </label>
+          {settings.pokemontcg_io_api_key_set && (
+            <button
+              type="button"
+              onClick={clearApiKey}
+              className="rounded-md border border-[var(--color-border)] px-3 py-1 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="mb-6 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
