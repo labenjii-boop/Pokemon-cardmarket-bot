@@ -191,17 +191,37 @@ def _seed_tcgdex_card(conn, number: str, set_source_set_id: str = "en:base1", re
     )
 
 
-def test_select_cards_for_tcgdex_poll_prioritizes_never_observed(db_conn):
-    _seed_tcgdex_card(db_conn, "1")
-    _seed_tcgdex_card(db_conn, "2")
+def test_select_cards_for_tcgdex_poll_prioritizes_partial_progress_over_never_observed(db_conn):
+    # Real deadlock this fixes: naively always preferring "never observed" cards meant the
+    # rotation kept fanning out to brand-new cards every run, and no single card ever reached
+    # min_observations — three consecutive live runs wrote ~2000 fresh observations between
+    # them and Top 100 stayed at exactly 0 rows the whole time. A card with 1-2 observations
+    # (closest to qualifying) must come before a card with 0.
+    _seed_tcgdex_card(db_conn, "1")  # will get one observation below: "partial progress"
+    _seed_tcgdex_card(db_conn, "2")  # never observed
     db_conn.execute(
         "INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency) "
         "VALUES ((SELECT id FROM cards WHERE source_card_id='en:base1-1'), 'raw-nm', 'tcgdex', '2026-09-01T00:00:00.000000Z', 1, 'EUR')"
     )
     db_conn.commit()
 
-    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10)
-    assert ordered == ["en:base1-2", "en:base1-1"]  # never-observed card first
+    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10, min_observations=3)
+    assert ordered == ["en:base1-1", "en:base1-2"]  # partial progress (1 obs) before never-observed
+
+
+def test_select_cards_for_tcgdex_poll_deprioritizes_already_qualified_cards(db_conn):
+    _seed_tcgdex_card(db_conn, "1")  # will reach 3 observations: already qualifies, lowest priority
+    _seed_tcgdex_card(db_conn, "2")  # never observed
+    for i in range(3):
+        db_conn.execute(
+            "INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency) "
+            "VALUES ((SELECT id FROM cards WHERE source_card_id='en:base1-1'), 'raw-nm', 'tcgdex', ?, 1, 'EUR')",
+            (f"2026-09-0{i+1}T00:00:00.000000Z",),
+        )
+    db_conn.commit()
+
+    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10, min_observations=3)
+    assert ordered == ["en:base1-2", "en:base1-1"]  # never-observed before an already-qualified card
 
 
 def test_select_cards_for_tcgdex_poll_prefers_newer_sets_among_never_observed(db_conn):

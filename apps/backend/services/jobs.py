@@ -18,7 +18,7 @@ from connectors.pokemontcg_io import PokemonTcgIoConnector
 from connectors.tcgdex import TcgdexConnector
 from services.connector_runs import finish_run, start_run
 from services.ingest import ingest_catalog_sets, ingest_price_observations, upsert_card
-from services.top100_job import compute_and_store_top100
+from services.top100_job import compute_and_store_top100, load_ranking_settings
 
 logger = logging.getLogger("jobs")
 
@@ -161,43 +161,48 @@ def poll_price_snapshots(conn: sqlite3.Connection) -> dict:
         return {"fetched": len(observations), "written": 0, "error": str(exc)}
 
 
-def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[str]:
+def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int, min_observations: int = 3) -> list[str]:
     """TCGdex pricing costs one HTTP request per card (connectors/tcgdex.py), so a single run
-    can't cover the whole catalog — this picks a rotating batch instead: cards with no
-    tcgdex-sourced snapshot yet first, then whichever were observed longest ago. Run this
-    regularly and coverage builds evenly across the whole catalog over many runs, rather than
-    the same first N cards getting polled forever while the rest never get touched.
+    can't cover the whole catalog — this picks a rotating batch instead.
 
-    Two lessons from a real run that came back with 300/300 zero-price cards, both addressed
-    here:
-      1. Every one of those 300 was from TCGdex's Pokémon TCG Pocket sets (serie id "tcgp") —
-         a separate digital-only mobile game TCGdex catalogs alongside the physical TCG, whose
+    Three lessons from real runs, all addressed here:
+      1. Every card from TCGdex's Pokémon TCG Pocket sets (serie id "tcgp" — a separate
+         digital-only mobile game TCGdex catalogs alongside the physical TCG) is excluded: those
          cards can never have TCGplayer/Cardmarket pricing because they aren't physical objects.
-         connectors/tcgdex.py now stops importing Pocket cards at all going forward, but this
-         filter also catches any already-imported before that fix (their `sets.series` gets
-         backfilled to 'tcgp' the next time catalog import runs over them).
-      2. Among the remaining, legitimately-physical "never observed yet" cards, newest sets
-         first: with no tiebreaker at all, SQLite fell back to insertion order, which has
-         nothing to do with which cards are actually likely to be actively traded. Not a
-         complete fix on its own (see lesson 1), but recently released cards are still likelier
-         to have a live listing than an obscure 25-year-old commons run — kept as a secondary
-         bias now that Pocket cards are excluded from the pool entirely."""
+      2. Among the rest, recently released sets are biased towards first — more likely to have
+         an active market listing than an obscure decades-old commons run.
+      3. The deadlock this fixes: naively always preferring "never observed" cards means the
+         rotation keeps fanning out to brand-new cards every run and no single card ever
+         accumulates enough observations to be ranked at all (Top 100 needs `min_observations`
+         real data points — a real run hit exactly this: three consecutive polls, ~2000 fresh
+         observations written, Top 100 stayed at 0 rows the whole time). Cards sitting between 1
+         and `min_observations - 1` observations are now the TOP priority — closest to
+         qualifying, so they get finished before the rotation moves on to undiscovered cards.
+         Cards that already have enough observations drop to lowest priority here (they're kept
+         fresh separately, if currently ranked, by _select_watchlist_cards_for_tcgdex_poll)."""
     rows = conn.execute(
         """
         SELECT c.source_card_id
         FROM cards c
         JOIN sets s ON s.id = c.set_id
         LEFT JOIN (
-            SELECT card_id, MAX(observed_at) AS last_observed
+            SELECT card_id, COUNT(*) AS obs_count, MAX(observed_at) AS last_observed
             FROM price_snapshots
             WHERE source_id = 'tcgdex'
             GROUP BY card_id
         ) ps ON ps.card_id = c.id
         WHERE c.source = 'tcgdex' AND (s.series IS NULL OR s.series != 'tcgp')
-        ORDER BY ps.last_observed IS NOT NULL, s.release_date DESC, ps.last_observed ASC
+        ORDER BY
+            CASE
+                WHEN COALESCE(ps.obs_count, 0) = 0 THEN 1
+                WHEN ps.obs_count < ? THEN 0
+                ELSE 2
+            END,
+            s.release_date DESC,
+            ps.last_observed ASC
         LIMIT ?
         """,
-        (limit,),
+        (min_observations, limit),
     ).fetchall()
     return [row["source_card_id"] for row in rows]
 
@@ -232,8 +237,11 @@ def poll_tcgdex_price_snapshots(conn: sqlite3.Connection, batch_size: int = 300)
     run_id = start_run(conn, "tcgdex")
     connector = TcgdexConnector()
     try:
+        min_observations = load_ranking_settings(conn).min_observations
         watchlist_ids = _select_watchlist_cards_for_tcgdex_poll(conn)
-        rotation_ids = _select_cards_for_tcgdex_poll(conn, limit=max(batch_size - len(watchlist_ids), 0))
+        rotation_ids = _select_cards_for_tcgdex_poll(
+            conn, limit=max(batch_size - len(watchlist_ids), 0), min_observations=min_observations
+        )
         seen: set[str] = set()
         card_ids = [cid for cid in watchlist_ids + rotation_ids if not (cid in seen or seen.add(cid))]
         observations = list(connector.fetch_observations(card_ids=card_ids))
