@@ -19,12 +19,14 @@ Interval choices, and why they're conservative:
     below.
   * `poll_tcgdex_snapshots` — every hour, 300 cards/run. TCGdex pricing costs one HTTP request
     per card (connectors/tcgdex.py), so a full-catalog poll like pokemontcg.io's isn't viable —
-    this instead polls a rotating batch (services/jobs.py's `_select_cards_for_tcgdex_poll`),
-    so coverage builds across the whole catalog over many runs rather than a single "poll
-    everything" pass. TCGdex doesn't publish a hard daily request cap ("generous... free tier"
-    per DATA_SOURCES.md §1), so this interval is a starting guess rather than a number derived
-    from a documented limit — connectors/_retry.py's backoff handles it if that guess turns out
-    wrong and TCGdex starts responding 429.
+    this instead always refreshes whatever's currently in Top 100 first (services/jobs.py's
+    `_select_watchlist_cards_for_tcgdex_poll` — the cards actually being looked at need to
+    accumulate real history quickly, not wait on a rotation cycle through a catalog that can be
+    tens of thousands of cards), then spends the rest of the batch discovering/rotating through
+    the rest of the catalog (`_select_cards_for_tcgdex_poll`). TCGdex doesn't publish a hard
+    daily request cap ("generous... free tier" per DATA_SOURCES.md §1), so this interval is a
+    starting guess rather than a number derived from a documented limit — connectors/_retry.py's
+    backoff handles it if that guess turns out wrong and TCGdex starts responding 429.
   * `recompute_top100` runs immediately after either snapshot poll writes anything (not on its
     own timer) so the ranking is never stale relative to the data it's ranking.
 

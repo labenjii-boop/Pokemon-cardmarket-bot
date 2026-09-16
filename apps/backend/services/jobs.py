@@ -202,15 +202,40 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int) -> list[
     return [row["source_card_id"] for row in rows]
 
 
+def _select_watchlist_cards_for_tcgdex_poll(conn: sqlite3.Connection) -> list[str]:
+    """Cards worth refreshing on *every* run regardless of the discovery rotation: whatever's
+    currently ranked in Top 100 (any time range/sort key), since that's what the user is
+    actually looking at. Real problem this fixes: with a catalog of tens of thousands of cards
+    and a rotation batch of a few hundred, a given card might not get revisited for days —
+    fine for slowly building overall coverage, but it means a card the user has open right now
+    could sit at a single observation (a flat, pointless "chart") for just as long. This runs
+    first and is never subject to the "never observed yet" bias."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT c.source_card_id
+        FROM top100_snapshots t
+        JOIN cards c ON c.id = t.card_id
+        WHERE c.source = 'tcgdex'
+          AND t.computed_at = (SELECT MAX(computed_at) FROM top100_snapshots)
+        """
+    ).fetchall()
+    return [row["source_card_id"] for row in rows]
+
+
 def poll_tcgdex_price_snapshots(conn: sqlite3.Connection, batch_size: int = 300) -> dict:
     """The TCGdex counterpart to poll_price_snapshots — same idea (today's market-price
     snapshot), different shape, because TCGdex's pricing lives on a per-card endpoint rather
-    than something pageable in bulk. See _select_cards_for_tcgdex_poll for how the batch is
-    chosen and connectors/tcgdex.py's module docstring for the API shape."""
+    than something pageable in bulk. The batch is the current Top 100's cards (see
+    _select_watchlist_cards_for_tcgdex_poll) plus, filling out the rest of batch_size, new/
+    least-recently-seen cards from _select_cards_for_tcgdex_poll — see connectors/tcgdex.py's
+    module docstring for the API shape."""
     run_id = start_run(conn, "tcgdex")
     connector = TcgdexConnector()
     try:
-        card_ids = _select_cards_for_tcgdex_poll(conn, limit=batch_size)
+        watchlist_ids = _select_watchlist_cards_for_tcgdex_poll(conn)
+        rotation_ids = _select_cards_for_tcgdex_poll(conn, limit=max(batch_size - len(watchlist_ids), 0))
+        seen: set[str] = set()
+        card_ids = [cid for cid in watchlist_ids + rotation_ids if not (cid in seen or seen.add(cid))]
         observations = list(connector.fetch_observations(card_ids=card_ids))
         written = ingest_price_observations(conn, "tcgdex", observations)
         conn.commit()

@@ -236,6 +236,28 @@ def test_select_cards_for_tcgdex_poll_respects_limit(db_conn):
     assert len(jobs._select_cards_for_tcgdex_poll(db_conn, limit=2)) == 2
 
 
+def test_select_watchlist_cards_returns_cards_from_latest_top100_only(db_conn):
+    _seed_tcgdex_card(db_conn, "1")
+    _seed_tcgdex_card(db_conn, "2")
+    card1 = db_conn.execute("SELECT id FROM cards WHERE source_card_id = 'en:base1-1'").fetchone()["id"]
+    card2 = db_conn.execute("SELECT id FROM cards WHERE source_card_id = 'en:base1-2'").fetchone()["id"]
+
+    def insert_snapshot(card_id, computed_at):
+        db_conn.execute(
+            "INSERT INTO top100_snapshots (time_range, computed_at, rank, card_id, grade_id, "
+            "start_price_eur, end_price_eur, change_pct, change_abs_eur, observation_count, sort_key) "
+            "VALUES ('7D', ?, 1, ?, 'raw-nm', 1, 1, 0, 0, 1, 'change_pct')",
+            (computed_at, card_id),
+        )
+
+    insert_snapshot(card1, "2026-09-01T00:00:00.000000Z")  # older batch — must be ignored
+    insert_snapshot(card2, "2026-09-02T00:00:00.000000Z")  # latest batch
+    db_conn.commit()
+
+    watchlist = jobs._select_watchlist_cards_for_tcgdex_poll(db_conn)
+    assert watchlist == ["en:base1-2"]
+
+
 @respx.mock
 def test_poll_tcgdex_price_snapshots_ingests_and_records_run(db_conn):
     _seed_tcgdex_card(db_conn, "4")
@@ -254,3 +276,33 @@ def test_poll_tcgdex_price_snapshots_ingests_and_records_run(db_conn):
 
     run = db_conn.execute("SELECT status FROM connector_runs WHERE source_id = 'tcgdex'").fetchone()
     assert run["status"] == "ok"
+
+
+@respx.mock
+def test_poll_tcgdex_price_snapshots_always_includes_watchlist_cards(db_conn):
+    # Real problem this fixes: the rotation alone would never re-select an already-observed
+    # card until every other card in a potentially huge catalog had been touched first — a card
+    # the user is actively looking at (i.e. ranked in Top 100) could go untouched for days.
+    _seed_tcgdex_card(db_conn, "1", set_source_set_id="en:watched")
+    watched_card_id = db_conn.execute("SELECT id FROM cards WHERE source_card_id = 'en:watched-1'").fetchone()["id"]
+    db_conn.execute(
+        "INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency, price_eur) "
+        "VALUES (?, 'raw-nm', 'tcgdex', '2026-09-16T00:00:00.000000Z', 100, 'EUR', 100)",
+        (watched_card_id,),
+    )  # already observed -> the plain rotation query would deprioritize it
+    db_conn.execute(
+        "INSERT INTO top100_snapshots (time_range, computed_at, rank, card_id, grade_id, "
+        "start_price_eur, end_price_eur, change_pct, change_abs_eur, observation_count, sort_key) "
+        "VALUES ('7D', '2026-09-16T01:00:00.000000Z', 1, ?, 'raw-nm', 100, 100, 0, 0, 1, 'change_pct')",
+        (watched_card_id,),
+    )
+    db_conn.commit()
+
+    route = respx.get(f"{TCGDEX_BASE_URL}/en/cards/watched-1").mock(
+        return_value=httpx.Response(200, json={"id": "watched-1", "pricing": {"cardmarket": {"trend": 105.0}, "tcgplayer": None}})
+    )
+
+    result = jobs.poll_tcgdex_price_snapshots(db_conn, batch_size=0)
+    assert route.called
+    assert result["cards_polled"] == 1
+    assert result["written"] == 1
