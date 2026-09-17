@@ -42,6 +42,7 @@ there — so nothing Pocket-sourced ever reaches price polling in the first plac
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Literal
 from urllib.parse import quote
 
@@ -159,6 +160,23 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
                 continue
             yield from _observations_from_card_detail(source_card_id, resp.json(), observed_at)
 
+    def fetch_price_history_backfill(self, source_card_id: str) -> list[PriceObservation]:
+        """A brand-new card only polled once or twice looks like a flat, pointless chart until
+        the rotation revisits it enough times over real elapsed hours/days for a shape to emerge
+        (see _select_cards_for_tcgdex_poll in services/jobs.py). Cardmarket's per-card response
+        already carries its own rolling historical averages — avg1/avg7/avg30 — right alongside
+        the current 'trend' price, in the exact same request `fetch_observations` already makes.
+        This turns those into backdated PriceObservations so a card's chart has real (if
+        approximate — a rolling average isn't literally "the price on that exact day") shape the
+        first time anyone actually looks at it, instead of making them wait for the background
+        rotation. Called on demand from GET /cards/{id}/prices (app/main.py) the first time a
+        card with thin history is opened — not part of the regular poll, which would otherwise
+        reinsert the same three backdated points every run for no benefit."""
+        locale, tcgdex_id = source_card_id.split(":", 1)
+        resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
+        resp.raise_for_status()
+        return _backfill_observations_from_card_detail(source_card_id, resp.json())
+
     def fetch_card_variant_pricing(self, source_card_id: str) -> dict[str, dict[str, float]]:
         """Live, on-demand breakdown of a card's price *per physical print variant* (holo,
         reverse holo, 1st edition, etc) — the exact data `_observations_from_card_detail`
@@ -248,6 +266,36 @@ def _observations_from_card_detail(source_card_id: str, raw: dict, observed_at: 
             price_currency="EUR",
             price_kind="market",
         )
+
+
+# Cardmarket's own rolling averages, backdated to roughly the window each one covers. Ordered
+# oldest-offset first purely for readability; ingest order doesn't matter (see ingest.py).
+_CARDMARKET_HISTORY_OFFSETS: tuple[tuple[str, timedelta], ...] = (
+    ("avg30", timedelta(days=30)),
+    ("avg7", timedelta(days=7)),
+    ("avg1", timedelta(days=1)),
+)
+
+
+def _backfill_observations_from_card_detail(source_card_id: str, raw: dict) -> list[PriceObservation]:
+    cardmarket = (raw.get("pricing") or {}).get("cardmarket") or {}
+    now = datetime.now(timezone.utc)
+    observations: list[PriceObservation] = []
+    for key, offset in _CARDMARKET_HISTORY_OFFSETS:
+        value = cardmarket.get(key)
+        if not isinstance(value, (int, float)):
+            continue
+        observations.append(
+            PriceObservation(
+                source="tcgdex",
+                card_source_id=source_card_id,
+                observed_at=(now - offset).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                price_amount=float(value),
+                price_currency="EUR",
+                price_kind="market",
+            )
+        )
+    return observations
 
 
 def _infer_variant(raw: dict) -> str | None:

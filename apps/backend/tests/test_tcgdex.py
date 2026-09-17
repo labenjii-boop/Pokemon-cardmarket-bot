@@ -241,3 +241,32 @@ def test_fetch_card_variant_pricing_handles_missing_pricing():
     connector = TcgdexConnector()
     result = connector.fetch_card_variant_pricing("en:obscure-1")
     assert result == {"cardmarket_eur": {}, "tcgplayer_usd": {}}
+
+
+@respx.mock
+def test_fetch_price_history_backfill_uses_cardmarket_rolling_averages():
+    # A brand-new card only ever polled once looks like a flat chart until the rotation revisits
+    # it enough times over real elapsed hours/days. Cardmarket's avg1/avg7/avg30 rolling averages
+    # (present in the same response fetch_observations already reads) give real, backdated shape
+    # immediately instead of making the user wait.
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_WITH_VARIANTS))
+    connector = TcgdexConnector()
+    observations = connector.fetch_price_history_backfill("en:ecard3-146")
+
+    assert len(observations) == 3
+    by_amount = {o.price_amount: o for o in observations}
+    assert 3398.0 in by_amount  # avg30
+    assert 2705.71 in by_amount  # avg7
+    assert 2599.95 in by_amount  # avg1
+    assert all(o.card_source_id == "en:ecard3-146" and o.price_currency == "EUR" for o in observations)
+    # Backdated, not stamped "now" — otherwise they'd just be three more copies of today's price.
+    timestamps = sorted(o.observed_at for o in observations)
+    assert timestamps[0] < timestamps[-1]
+
+
+@respx.mock
+def test_fetch_price_history_backfill_handles_missing_pricing():
+    respx.get(f"{BASE_URL}/en/cards/obscure-1").mock(return_value=httpx.Response(200, json={"id": "obscure-1"}))
+    connector = TcgdexConnector()
+    observations = connector.fetch_price_history_backfill("en:obscure-1")
+    assert observations == []

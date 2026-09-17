@@ -29,6 +29,7 @@ from app.secrets import delete_secret, get_secret, set_secret
 from app.ws import ConnectionManager
 from connectors.tcgdex import TcgdexConnector
 from services import jobs
+from services.ingest import ingest_price_observations
 from services.search import search_cards
 from services.top100 import TIME_RANGE_TO_TIMEDELTA, period_for_range
 from services.top100_job import format_query_bound
@@ -195,6 +196,36 @@ def get_card(card_id: str) -> dict:
         return dict(row)
 
 
+def _backfill_thin_tcgdex_history(conn, card_id: str) -> None:
+    """A card that's only ever been polled once or twice looks like a flat, pointless chart
+    until the background rotation happens to revisit it enough times over real elapsed
+    hours/days (see _select_cards_for_tcgdex_poll in services/jobs.py) — not something a user
+    opening a card right now should have to wait on. When this card has fewer than 2 stored
+    TCGdex snapshots, make one live call to seed real (if approximate) history from Cardmarket's
+    own avg1/avg7/avg30 rolling averages — see TcgdexConnector.fetch_price_history_backfill.
+    Best-effort: a failed live call here must not break loading whatever history already exists.
+    """
+    row = conn.execute("SELECT source, source_card_id FROM cards WHERE id = ?", (card_id,)).fetchone()
+    if row is None or row["source"] != "tcgdex":
+        return
+    existing = conn.execute(
+        "SELECT COUNT(*) AS n FROM price_snapshots WHERE card_id = ? AND source_id = 'tcgdex'", (card_id,)
+    ).fetchone()["n"]
+    if existing >= 2:
+        return
+    connector = TcgdexConnector()
+    try:
+        observations = connector.fetch_price_history_backfill(row["source_card_id"])
+    except Exception:  # noqa: BLE001 — best-effort seed, never block the page over it
+        logger.warning("tcgdex history backfill failed for %s", card_id, exc_info=True)
+        return
+    finally:
+        connector.close()
+    if observations:
+        ingest_price_observations(conn, "tcgdex", observations)
+        conn.commit()
+
+
 @app.get("/cards/{card_id}/prices")
 def get_card_prices(card_id: str, time_range: str = "30D") -> list[dict]:
     """Section 11.4/11.5: the raw series the card detail page's interactive chart plots. Every
@@ -204,6 +235,7 @@ def get_card_prices(card_id: str, time_range: str = "30D") -> list[dict]:
         raise HTTPException(status_code=400, detail=f"time_range must be one of {sorted(TIME_RANGE_TO_TIMEDELTA)}")
     period_start, period_end = period_for_range(time_range, datetime.now(timezone.utc))
     with get_connection() as conn:
+        _backfill_thin_tcgdex_history(conn, card_id)
         rows = conn.execute(
             """
             SELECT observed_at, price_eur, grade_id, source_id

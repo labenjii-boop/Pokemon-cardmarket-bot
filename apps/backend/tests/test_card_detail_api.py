@@ -91,6 +91,53 @@ def test_get_card_prices_returns_series_within_range(client):
     assert body[0]["observed_at"] < body[-1]["observed_at"]  # ordered oldest first
 
 
+@respx.mock
+def test_get_card_prices_backfills_history_for_a_thin_card(client):
+    # A card with 0-1 real snapshots gets one live TCGdex call to seed real (backdated) history
+    # from Cardmarket's avg1/avg7/avg30 — so a chart isn't flat/empty the very first time it's
+    # opened, without waiting for the background rotation to revisit this card.
+    c, main = client
+    card_id = _seed_card(main)
+    respx.get(f"{BASE_URL}/en/cards/base1-4").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "base1-4",
+                "pricing": {"cardmarket": {"unit": "EUR", "trend": 100.0, "avg1": 90.0, "avg7": 80.0, "avg30": 70.0}},
+            },
+        )
+    )
+
+    r = c.get(f"/cards/{card_id}/prices?time_range=1Y")
+    assert r.status_code == 200
+    body = r.json()
+    prices = {row["price_eur"] for row in body}
+    assert {90.0, 80.0, 70.0}.issubset(prices)
+
+
+@respx.mock
+def test_get_card_prices_does_not_backfill_once_there_is_real_history(client):
+    # No respx route is registered for the TCGdex card-detail endpoint here — if the backend
+    # tried to call it anyway, this test would fail with a connection error, which is exactly
+    # the point: a card with enough real history shouldn't trigger a live backfill call at all.
+    c, main = client
+    card_id = _seed_card(main)
+    now = datetime.now(timezone.utc)
+    with main.get_connection() as conn:
+        for i, price in enumerate([100.0, 110.0]):
+            observed_at = (now - timedelta(days=i)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            conn.execute(
+                "INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency, price_eur) "
+                "VALUES (?, 'raw-nm', 'tcgdex', ?, ?, 'EUR', ?)",
+                (card_id, observed_at, price, price),
+            )
+        conn.commit()
+
+    r = c.get(f"/cards/{card_id}/prices?time_range=1Y")
+    assert r.status_code == 200
+    assert len(r.json()) == 2
+
+
 def test_get_card_variants_returns_404_for_unknown_card(client):
     c, _ = client
     r = c.get("/cards/does-not-exist/variants")
