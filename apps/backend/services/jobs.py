@@ -179,7 +179,13 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int, min_obse
          and `min_observations - 1` observations are now the TOP priority — closest to
          qualifying, so they get finished before the rotation moves on to undiscovered cards.
          Cards that already have enough observations drop to lowest priority here (they're kept
-         fresh separately, if currently ranked, by _select_watchlist_cards_for_tcgdex_poll)."""
+         fresh separately, if currently ranked, by _select_watchlist_cards_for_tcgdex_poll).
+      4. Within that top-priority group, highest observation count first (2 beats 1) — caught
+         from the very next real run after lesson 3's fix landed: 1,468 cards sitting at 1
+         observation and 800 at 2, with no count-based tiebreak the 800 closest to actually
+         qualifying could easily lose out to the far larger pool of 1's on a tiebreak that only
+         looked at release date and last-observed time, stalling right at the finish line
+         instead of crossing it."""
     rows = conn.execute(
         """
         SELECT c.source_card_id
@@ -198,6 +204,7 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int, min_obse
                 WHEN ps.obs_count < ? THEN 0
                 ELSE 2
             END,
+            COALESCE(ps.obs_count, 0) DESC,
             s.release_date DESC,
             ps.last_observed ASC
         LIMIT ?

@@ -209,6 +209,31 @@ def test_select_cards_for_tcgdex_poll_prioritizes_partial_progress_over_never_ob
     assert ordered == ["en:base1-1", "en:base1-2"]  # partial progress (1 obs) before never-observed
 
 
+def test_select_cards_for_tcgdex_poll_prefers_higher_partial_count_within_the_partial_tier(db_conn):
+    # Real regression, caught immediately after the fix above landed: a live run had 1,468
+    # cards sitting at 1 observation and 800 at 2. Both are "partial progress" (same tier), but
+    # without an obs_count tiebreak the 800 closest to actually qualifying could lose out to the
+    # much larger pool of 1's and never cross the finish line.
+    _seed_tcgdex_card(db_conn, "1")  # -> 1 observation
+    _seed_tcgdex_card(db_conn, "2")  # -> 2 observations
+    card1 = "(SELECT id FROM cards WHERE source_card_id='en:base1-1')"
+    card2 = "(SELECT id FROM cards WHERE source_card_id='en:base1-2')"
+    db_conn.execute(
+        f"INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency) "
+        f"VALUES ({card1}, 'raw-nm', 'tcgdex', '2026-09-01T00:00:00.000000Z', 1, 'EUR')"
+    )
+    for i in range(2):
+        db_conn.execute(
+            f"INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency) "
+            f"VALUES ({card2}, 'raw-nm', 'tcgdex', ?, 1, 'EUR')",
+            (f"2026-09-0{i+1}T00:00:00.000000Z",),
+        )
+    db_conn.commit()
+
+    ordered = jobs._select_cards_for_tcgdex_poll(db_conn, limit=10, min_observations=3)
+    assert ordered == ["en:base1-2", "en:base1-1"]  # 2 observations (closer to done) before 1
+
+
 def test_select_cards_for_tcgdex_poll_deprioritizes_already_qualified_cards(db_conn):
     _seed_tcgdex_card(db_conn, "1")  # will reach 3 observations: already qualifies, lowest priority
     _seed_tcgdex_card(db_conn, "2")  # never observed
