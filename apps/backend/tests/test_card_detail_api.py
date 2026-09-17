@@ -112,7 +112,9 @@ def test_get_card_prices_backfills_history_for_a_thin_card(client):
     assert r.status_code == 200
     body = r.json()
     prices = {row["price_eur"] for row in body}
-    assert {90.0, 80.0, 70.0}.issubset(prices)
+    # 100.0 ("now"/trend) plus the three backdated rolling averages — covers every timeframe,
+    # including a short one like 1D, not just the longer ranges the backdated points alone reach.
+    assert {100.0, 90.0, 80.0, 70.0}.issubset(prices)
 
 
 @respx.mock

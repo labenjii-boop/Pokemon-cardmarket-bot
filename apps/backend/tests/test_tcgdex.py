@@ -248,18 +248,20 @@ def test_fetch_price_history_backfill_uses_cardmarket_rolling_averages():
     # A brand-new card only ever polled once looks like a flat chart until the rotation revisits
     # it enough times over real elapsed hours/days. Cardmarket's avg1/avg7/avg30 rolling averages
     # (present in the same response fetch_observations already reads) give real, backdated shape
-    # immediately instead of making the user wait.
+    # immediately instead of making the user wait — plus the current 'trend' price at "now", so a
+    # short (e.g. 1-day) range isn't left empty.
     respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_WITH_VARIANTS))
     connector = TcgdexConnector()
     observations = connector.fetch_price_history_backfill("en:ecard3-146")
 
-    assert len(observations) == 3
+    assert len(observations) == 4
     by_amount = {o.price_amount: o for o in observations}
+    assert 3687.39 in by_amount  # trend, "now"
     assert 3398.0 in by_amount  # avg30
     assert 2705.71 in by_amount  # avg7
     assert 2599.95 in by_amount  # avg1
     assert all(o.card_source_id == "en:ecard3-146" and o.price_currency == "EUR" for o in observations)
-    # Backdated, not stamped "now" — otherwise they'd just be three more copies of today's price.
+    # Backdated, not all stamped "now" — otherwise they'd just be four more copies of today's price.
     timestamps = sorted(o.observed_at for o in observations)
     assert timestamps[0] < timestamps[-1]
 
@@ -270,3 +272,22 @@ def test_fetch_price_history_backfill_handles_missing_pricing():
     connector = TcgdexConnector()
     observations = connector.fetch_price_history_backfill("en:obscure-1")
     assert observations == []
+
+
+@respx.mock
+def test_fetch_observations_backfills_only_the_requested_ids():
+    # backfill_ids lets services/jobs.py seed Cardmarket's rolling averages only for cards with
+    # zero stored history yet — everything else in the same batch just gets the regular single
+    # "trend" point, same as before backfill_ids existed.
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_WITH_VARIANTS))
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:ecard3-146"], backfill_ids={"en:ecard3-146"}))
+    assert len(observations) == 4  # 1 "now" trend point + 3 backfilled rolling averages
+
+
+@respx.mock
+def test_fetch_observations_does_not_backfill_ids_outside_backfill_ids():
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_WITH_VARIANTS))
+    connector = TcgdexConnector()
+    observations = list(connector.fetch_observations(card_ids=["en:ecard3-146"], backfill_ids=set()))
+    assert len(observations) == 1

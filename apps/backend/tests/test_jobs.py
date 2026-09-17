@@ -323,6 +323,42 @@ def test_poll_tcgdex_price_snapshots_ingests_and_records_run(db_conn):
     assert run["status"] == "ok"
 
 
+def test_cards_without_tcgdex_history_excludes_already_observed_cards(db_conn):
+    _seed_tcgdex_card(db_conn, "1")  # will get an observation below
+    _seed_tcgdex_card(db_conn, "2")  # never observed
+    db_conn.execute(
+        "INSERT INTO price_snapshots (card_id, grade_id, source_id, observed_at, price_amount, price_currency) "
+        "VALUES ((SELECT id FROM cards WHERE source_card_id='en:base1-1'), 'raw-nm', 'tcgdex', '2026-09-01T00:00:00.000000Z', 1, 'EUR')"
+    )
+    db_conn.commit()
+
+    result = jobs._cards_without_tcgdex_history(db_conn, ["en:base1-1", "en:base1-2"])
+    assert result == {"en:base1-2"}
+
+
+@respx.mock
+def test_poll_tcgdex_price_snapshots_backfills_a_brand_new_cards_first_poll(db_conn):
+    # Real problem this fixes: Top 100 needs `min_observations` real, hours-apart polls before a
+    # brand-new card can be ranked with a meaningful % change — backfilling Cardmarket's
+    # avg1/avg7/avg30 rolling averages on a card's very first poll gets it past that threshold
+    # immediately instead of over real elapsed time.
+    _seed_tcgdex_card(db_conn, "4")
+    db_conn.commit()
+
+    respx.get(f"{TCGDEX_BASE_URL}/en/cards/base1-4").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "base1-4",
+                "pricing": {"cardmarket": {"trend": 100.0, "avg1": 90.0, "avg7": 80.0, "avg30": 70.0}, "tcgplayer": None},
+            },
+        )
+    )
+
+    result = jobs.poll_tcgdex_price_snapshots(db_conn, batch_size=10)
+    assert result["written"] == 4  # 1 "now" point + 3 backfilled rolling averages, first poll only
+
+
 @respx.mock
 def test_poll_tcgdex_price_snapshots_always_includes_watchlist_cards(db_conn):
     # Real problem this fixes: the rotation alone would never re-select an already-observed

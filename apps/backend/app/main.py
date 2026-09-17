@@ -234,9 +234,12 @@ def get_card_prices(card_id: str, time_range: str = "30D") -> list[dict]:
     the ungraded 'raw-nm' market-price snapshots, see DATA_SOURCES.md §0), oldest first."""
     if time_range not in TIME_RANGE_TO_TIMEDELTA:
         raise HTTPException(status_code=400, detail=f"time_range must be one of {sorted(TIME_RANGE_TO_TIMEDELTA)}")
-    period_start, period_end = period_for_range(time_range, datetime.now(timezone.utc))
     with get_connection() as conn:
+        # Backfill (if it runs at all) happens before the range is computed, not after — its
+        # "now" point must land inside `period_end`, not get excluded by a range boundary that
+        # was already computed a moment earlier.
         _backfill_thin_tcgdex_history(conn, card_id)
+        period_start, period_end = period_for_range(time_range, datetime.now(timezone.utc))
         rows = conn.execute(
             """
             SELECT observed_at, price_eur, grade_id, source_id

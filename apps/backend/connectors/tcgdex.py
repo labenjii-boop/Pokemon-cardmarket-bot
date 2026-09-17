@@ -134,17 +134,26 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
     # -- SnapshotConnector ------------------------------------------------------------------
 
     def fetch_observations(
-        self, since: str | None = None, card_ids: list[str] | None = None
+        self, since: str | None = None, card_ids: list[str] | None = None, backfill_ids: set[str] | None = None
     ) -> Iterable[PriceObservation]:
         """Pricing only lives on the per-card detail endpoint (see module docstring) — one
         request per id in `card_ids`, so unlike pokemontcg.io this can't cheaply do "everything."
         `card_ids` is required, not optional in practice; services/jobs.py is what decides which
-        ids to pass (a rotating batch — see its module docstring for why)."""
+        ids to pass (a rotating batch — see its module docstring for why).
+
+        `backfill_ids` (a subset of `card_ids`) additionally seeds Cardmarket's avg1/avg7/avg30
+        rolling averages as backdated points, from the exact same response already fetched for
+        the regular 'trend' observation — no extra request. services/jobs.py passes the set of
+        cards that have zero stored history yet, so a brand-new card's *first ever* poll already
+        has real (if approximate) movement instead of needing dozens of real polls spread over
+        real hours/days before a % change means anything — see _backfill_observations_from_card_detail.
+        """
         if not card_ids:
             raise ValueError(
                 "TcgdexConnector.fetch_observations requires card_ids: pricing only exists on "
                 "the per-card detail endpoint, so there is no cheap 'fetch everything' here."
             )
+        backfill_ids = backfill_ids or set()
         observed_at = utcnow_iso()
         for source_card_id in card_ids:
             locale, tcgdex_id = source_card_id.split(":", 1)
@@ -158,7 +167,10 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
                 # get_with_retry) must not throw away the other 299 — log it and keep going.
                 logger.warning("skipping %s after a persistent error: %s", source_card_id, exc)
                 continue
-            yield from _observations_from_card_detail(source_card_id, resp.json(), observed_at)
+            raw = resp.json()
+            yield from _observations_from_card_detail(source_card_id, raw, observed_at)
+            if source_card_id in backfill_ids:
+                yield from _backfill_observations_from_card_detail(source_card_id, raw)
 
     def fetch_price_history_backfill(self, source_card_id: str) -> list[PriceObservation]:
         """A brand-new card only polled once or twice looks like a flat, pointless chart until
@@ -166,16 +178,20 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
         (see _select_cards_for_tcgdex_poll in services/jobs.py). Cardmarket's per-card response
         already carries its own rolling historical averages — avg1/avg7/avg30 — right alongside
         the current 'trend' price, in the exact same request `fetch_observations` already makes.
-        This turns those into backdated PriceObservations so a card's chart has real (if
-        approximate — a rolling average isn't literally "the price on that exact day") shape the
-        first time anyone actually looks at it, instead of making them wait for the background
+        This turns those into backdated PriceObservations, plus the current 'trend' price at
+        'now' (so a 1-day view isn't left empty — the avg1/7/30 points alone can fall just
+        outside a short range), so a card's chart has real (if approximate — a rolling average
+        isn't literally "the price on that exact day") shape across every timeframe the first
+        time anyone actually looks at it, instead of making them wait for the background
         rotation. Called on demand from GET /cards/{id}/prices (app/main.py) the first time a
-        card with thin history is opened — not part of the regular poll, which would otherwise
-        reinsert the same three backdated points every run for no benefit."""
+        card with thin history is opened."""
         locale, tcgdex_id = source_card_id.split(":", 1)
         resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
         resp.raise_for_status()
-        return _backfill_observations_from_card_detail(source_card_id, resp.json())
+        raw = resp.json()
+        observations = list(_observations_from_card_detail(source_card_id, raw, utcnow_iso()))
+        observations.extend(_backfill_observations_from_card_detail(source_card_id, raw))
+        return observations
 
     def fetch_card_variant_pricing(self, source_card_id: str) -> dict[str, dict[str, float]]:
         """Live, on-demand breakdown of a card's price *per physical print variant* (holo,

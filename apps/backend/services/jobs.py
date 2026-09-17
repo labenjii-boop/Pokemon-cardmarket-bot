@@ -214,6 +214,31 @@ def _select_cards_for_tcgdex_poll(conn: sqlite3.Connection, limit: int, min_obse
     return [row["source_card_id"] for row in rows]
 
 
+def _cards_without_tcgdex_history(conn: sqlite3.Connection, source_card_ids: list[str]) -> set[str]:
+    """Which of `source_card_ids` have zero stored TCGdex snapshots yet — i.e. this poll is the
+    very first time they're being observed. Used to decide which cards additionally get
+    Cardmarket's avg1/avg7/avg30 backfilled as backdated points (see TcgdexConnector.fetch_observations'
+    `backfill_ids`): without it, Top 100 needs `min_observations` *real, hours-apart* polls
+    before a brand-new card can be ranked with a meaningful % change at all — a real run hit
+    this exactly (thousands of fresh observations written, Top 100 still at 0 rows). Backfilling
+    a card's first poll gets it past that threshold immediately instead of over real elapsed time."""
+    if not source_card_ids:
+        return set()
+    placeholders = ",".join("?" for _ in source_card_ids)
+    rows = conn.execute(
+        f"""
+        SELECT c.source_card_id
+        FROM cards c
+        LEFT JOIN price_snapshots ps ON ps.card_id = c.id AND ps.source_id = 'tcgdex'
+        WHERE c.source = 'tcgdex' AND c.source_card_id IN ({placeholders})
+        GROUP BY c.source_card_id
+        HAVING COUNT(ps.id) = 0
+        """,
+        source_card_ids,
+    ).fetchall()
+    return {row["source_card_id"] for row in rows}
+
+
 def _select_watchlist_cards_for_tcgdex_poll(conn: sqlite3.Connection) -> list[str]:
     """Cards worth refreshing on *every* run regardless of the discovery rotation: whatever's
     currently ranked in Top 100 (any time range/sort key), since that's what the user is
@@ -251,7 +276,8 @@ def poll_tcgdex_price_snapshots(conn: sqlite3.Connection, batch_size: int = 300)
         )
         seen: set[str] = set()
         card_ids = [cid for cid in watchlist_ids + rotation_ids if not (cid in seen or seen.add(cid))]
-        observations = list(connector.fetch_observations(card_ids=card_ids))
+        backfill_ids = _cards_without_tcgdex_history(conn, card_ids)
+        observations = list(connector.fetch_observations(card_ids=card_ids, backfill_ids=backfill_ids))
         written = ingest_price_observations(conn, "tcgdex", observations)
         conn.commit()
         finish_run(conn, run_id, "ok", records_fetched=len(observations), records_written=written)
