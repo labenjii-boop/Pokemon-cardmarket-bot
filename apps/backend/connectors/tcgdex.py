@@ -159,6 +159,70 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
                 continue
             yield from _observations_from_card_detail(source_card_id, resp.json(), observed_at)
 
+    def fetch_card_variant_pricing(self, source_card_id: str) -> dict[str, dict[str, float]]:
+        """Live, on-demand breakdown of a card's price *per physical print variant* (holo,
+        reverse holo, 1st edition, etc) — the exact data `_observations_from_card_detail`
+        deliberately does NOT turn into stored PriceObservations (see its docstring: mixing
+        variants into one time series was the bug behind a chart that looked like noise). This
+        is the correct place for that per-variant breakdown to live: a live snapshot for the
+        card detail page's "variant pricing" section, not a stored series, so it can't collide
+        with — or reintroduce the bug in — the main price history.
+        """
+        locale, tcgdex_id = source_card_id.split(":", 1)
+        resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
+        resp.raise_for_status()
+        pricing = resp.json().get("pricing") or {}
+        return {
+            "cardmarket_eur": _parse_cardmarket_variants(pricing.get("cardmarket") or {}),
+            "tcgplayer_usd": _parse_tcgplayer_variants(pricing.get("tcgplayer") or {}),
+        }
+
+
+# Cardmarket has no variant *list* — each variant's price is just a separate flat key, named
+# "<metric>" (the base/normal variant) or "<metric>-<variant>" (e.g. "trend-holo"). Preferring
+# 'trend' over the avg* fields mirrors what _observations_from_card_detail already treats as the
+# canonical "current price" signal.
+_CARDMARKET_METRIC_PREFIXES = ("trend", "avg30", "avg7", "avg1", "avg", "low")
+
+
+def _parse_cardmarket_variants(cardmarket: dict) -> dict[str, float]:
+    # Pass 1: which variants exist at all, from whichever keys are present (dict iteration
+    # order is arbitrary, so this can't also pick *values* — see pass 2).
+    variant_names: set[str] = set()
+    for key in cardmarket:
+        for prefix in _CARDMARKET_METRIC_PREFIXES:
+            if key == prefix:
+                variant_names.add("normal")
+                break
+            if key.startswith(prefix + "-"):
+                variant_names.add(key[len(prefix) + 1 :])
+                break
+
+    # Pass 2: for each variant, walk the prefixes in *preference* order (trend beats avg beats
+    # low) and take the first one that's actually present — independent of dict key order, which
+    # a naive single-pass setdefault() got wrong (whichever key the dict happened to yield first
+    # would win, not whichever metric this module treats as canonical).
+    variants: dict[str, float] = {}
+    for variant in variant_names:
+        for prefix in _CARDMARKET_METRIC_PREFIXES:
+            key = prefix if variant == "normal" else f"{prefix}-{variant}"
+            value = cardmarket.get(key)
+            if isinstance(value, (int, float)):
+                variants[variant] = float(value)
+                break
+    return variants
+
+
+def _parse_tcgplayer_variants(tcgplayer: dict) -> dict[str, float]:
+    variants: dict[str, float] = {}
+    for finish, prices in tcgplayer.items():
+        if not isinstance(prices, dict):
+            continue  # 'unit'/'updated' are sibling string fields alongside the per-finish dicts
+        market = prices.get("marketPrice")
+        if market is not None:
+            variants[finish] = float(market)
+    return variants
+
 
 def _observations_from_card_detail(source_card_id: str, raw: dict, observed_at: str) -> Iterable[PriceObservation]:
     """Yields at most ONE observation per card per poll — a real bug surfaced by a live chart

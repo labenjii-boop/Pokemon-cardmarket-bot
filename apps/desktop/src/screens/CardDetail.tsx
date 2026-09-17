@@ -1,12 +1,93 @@
 import { createChart, LineSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
-import { fetchCard, fetchCardPrices, type CardDetail as CardDetailType, type CardPricePoint, type TimeRange } from "../api/client";
+import {
+  fetchCard,
+  fetchCardPrices,
+  fetchCardVariants,
+  type CardDetail as CardDetailType,
+  type CardPricePoint,
+  type CardVariantPricing,
+  type TimeRange,
+} from "../api/client";
 import { CardImage } from "../components/CardImage";
 
 const TIME_RANGES: TimeRange[] = ["1D", "7D", "30D", "6M", "1Y"];
 
 function formatEur(amount: number): string {
   return new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" }).format(amount);
+}
+
+function formatUsd(amount: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+}
+
+// TCGdex variant/finish keys are lowercase-hyphenated ("reverse-holo", "1st-edition",
+// "holofoil") — title-case them word by word for display.
+function formatVariantLabel(key: string): string {
+  return key
+    .split("-")
+    .map((word) => (word.length ? word[0].toUpperCase() + word.slice(1) : word))
+    .join(" ");
+}
+
+function VariantPricing({ cardId }: { cardId: string }) {
+  const [variants, setVariants] = useState<CardVariantPricing | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchCardVariants(cardId)
+      .then(setVariants)
+      .catch(() => setVariants(null))
+      .finally(() => setLoading(false));
+  }, [cardId]);
+
+  if (loading) {
+    return <p className="text-sm text-[var(--color-text-muted)]">Loading variant pricing…</p>;
+  }
+
+  const eurEntries = Object.entries(variants?.cardmarket_eur ?? {});
+  const usdEntries = Object.entries(variants?.tcgplayer_usd ?? {});
+
+  if (eurEntries.length === 0 && usdEntries.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+      <h2 className="mb-3 text-sm font-semibold text-[var(--color-text-muted)]">
+        Pricing by variant (holo, reverse holo, 1st edition, etc)
+      </h2>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {eurEntries.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs uppercase tracking-wide text-[var(--color-text-muted)]">Cardmarket (EUR)</p>
+            <ul className="divide-y divide-[var(--color-border)]">
+              {eurEntries.map(([variant, price]) => (
+                <li key={variant} className="flex items-center justify-between py-1.5 text-sm">
+                  <span>{formatVariantLabel(variant)}</span>
+                  <span className="font-medium">{formatEur(price)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {usdEntries.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs uppercase tracking-wide text-[var(--color-text-muted)]">TCGplayer (USD)</p>
+            <ul className="divide-y divide-[var(--color-border)]">
+              {usdEntries.map(([variant, price]) => (
+                <li key={variant} className="flex items-center justify-between py-1.5 text-sm">
+                  <span>{formatVariantLabel(variant)}</span>
+                  <span className="font-medium">{formatUsd(price)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function PriceChart({ points }: { points: CardPricePoint[] }) {
@@ -120,7 +201,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
         ))}
       </div>
 
-      <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+      <div className="mb-6 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
         {prices.length > 0 ? (
           <PriceChart points={prices} />
         ) : (
@@ -130,6 +211,8 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
           </div>
         )}
       </div>
+
+      <VariantPricing cardId={cardId} />
     </div>
   );
 }

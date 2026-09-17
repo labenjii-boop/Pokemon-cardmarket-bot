@@ -181,3 +181,12 @@ export function fetchCard(cardId: string): Promise<CardDetail> {
 export function fetchCardPrices(cardId: string, timeRange: TimeRange): Promise<CardPricePoint[]> {
   return get<CardPricePoint[]>(`/cards/${encodeURIComponent(cardId)}/prices?time_range=${timeRange}`);
 }
+
+export interface CardVariantPricing {
+  cardmarket_eur: Record<string, number>;
+  tcgplayer_usd: Record<string, number>;
+}
+
+export function fetchCardVariants(cardId: string): Promise<CardVariantPricing> {
+  return get<CardVariantPricing>(`/cards/${encodeURIComponent(cardId)}/variants`);
+}

@@ -2,8 +2,12 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
+
+from connectors.tcgdex import BASE_URL
 
 
 @pytest.fixture
@@ -85,3 +89,34 @@ def test_get_card_prices_returns_series_within_range(client):
     body = r.json()
     assert len(body) == 3
     assert body[0]["observed_at"] < body[-1]["observed_at"]  # ordered oldest first
+
+
+def test_get_card_variants_returns_404_for_unknown_card(client):
+    c, _ = client
+    r = c.get("/cards/does-not-exist/variants")
+    assert r.status_code == 404
+
+
+@respx.mock
+def test_get_card_variants_returns_live_breakdown(client):
+    c, main = client
+    card_id = _seed_card(main)
+    respx.get(f"{BASE_URL}/en/cards/base1-4").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "base1-4",
+                "pricing": {
+                    "cardmarket": {"unit": "EUR", "trend": 100.0, "trend-holo": 250.0},
+                    "tcgplayer": {"unit": "USD", "holofoil": {"marketPrice": 300.0}},
+                },
+            },
+        )
+    )
+
+    r = c.get(f"/cards/{card_id}/variants")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cardmarket_eur"]["normal"] == 100.0
+    assert body["cardmarket_eur"]["holo"] == 250.0
+    assert body["tcgplayer_usd"] == {"holofoil": 300.0}

@@ -27,6 +27,7 @@ from app.db import get_connection, init_db
 from app.scheduler import build_scheduler
 from app.secrets import delete_secret, get_secret, set_secret
 from app.ws import ConnectionManager
+from connectors.tcgdex import TcgdexConnector
 from services import jobs
 from services.search import search_cards
 from services.top100 import TIME_RANGE_TO_TIMEDELTA, period_for_range
@@ -213,6 +214,28 @@ def get_card_prices(card_id: str, time_range: str = "30D") -> list[dict]:
             (card_id, format_query_bound(period_start), format_query_bound(period_end)),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+@app.get("/cards/{card_id}/variants")
+def get_card_variants(card_id: str) -> dict:
+    """Live, on-demand per-print-variant price breakdown (holo, reverse holo, etc) — one direct
+    request to TCGdex right now, not something pre-computed or stored. Deliberately separate
+    from /cards/{id}/prices: that endpoint's time series was the site of a real bug where mixing
+    variant-specific prices together made the chart look like noise (see
+    connectors/tcgdex.py's _observations_from_card_detail docstring) — this endpoint is where
+    that same per-variant data belongs instead, as a live snapshot, not stored history."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT source, source_card_id FROM cards WHERE id = ?", (card_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="card not found")
+    if row["source"] != "tcgdex":
+        return {"cardmarket_eur": {}, "tcgplayer_usd": {}}  # only TCGdex-sourced cards support this today
+
+    connector = TcgdexConnector()
+    try:
+        return connector.fetch_card_variant_pricing(row["source_card_id"])
+    finally:
+        connector.close()
 
 
 @app.get("/top100")

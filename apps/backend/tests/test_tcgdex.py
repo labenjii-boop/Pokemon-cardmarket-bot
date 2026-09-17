@@ -199,3 +199,45 @@ def test_fetch_observations_handles_card_with_no_marketplace_listing():
     connector = TcgdexConnector()
     observations = list(connector.fetch_observations(card_ids=["en:obscure-1"]))
     assert observations == []
+
+
+# The full real cardmarket block from the same live GET /v2/en/cards/ecard3-146 response as
+# REAL_CARD_DETAIL_RESPONSE above (trimmed there to just what fetch_observations reads) — this
+# one keeps the '-holo' suffixed fields fetch_card_variant_pricing is actually for.
+REAL_CARD_DETAIL_WITH_VARIANTS = {
+    "id": "ecard3-146",
+    "name": "Charizard",
+    "pricing": {
+        "cardmarket": {
+            "unit": "EUR",
+            "avg": 1566.65, "low": 420, "trend": 3687.39,
+            "avg1": 2599.95, "avg7": 2705.71, "avg30": 3398,
+            "avg-holo": 3544.5, "low-holo": 420, "trend-holo": 1973.13,
+            "avg1-holo": 3950, "avg7-holo": 2059.14, "avg30-holo": 1168.34,
+        },
+        "tcgplayer": {
+            "unit": "USD",
+            "holofoil": {"marketPrice": 1500},
+            "reverse-holofoil": {"marketPrice": 2999.99},
+        },
+    },
+}
+
+
+@respx.mock
+def test_fetch_card_variant_pricing_parses_real_shape():
+    respx.get(f"{BASE_URL}/en/cards/ecard3-146").mock(return_value=httpx.Response(200, json=REAL_CARD_DETAIL_WITH_VARIANTS))
+    connector = TcgdexConnector()
+    result = connector.fetch_card_variant_pricing("en:ecard3-146")
+
+    assert result["cardmarket_eur"]["normal"] == 3687.39  # 'trend', preferred over avg/avg30/etc
+    assert result["cardmarket_eur"]["holo"] == 1973.13  # 'trend-holo'
+    assert result["tcgplayer_usd"] == {"holofoil": 1500.0, "reverse-holofoil": 2999.99}
+
+
+@respx.mock
+def test_fetch_card_variant_pricing_handles_missing_pricing():
+    respx.get(f"{BASE_URL}/en/cards/obscure-1").mock(return_value=httpx.Response(200, json={"id": "obscure-1"}))
+    connector = TcgdexConnector()
+    result = connector.fetch_card_variant_pricing("en:obscure-1")
+    assert result == {"cardmarket_eur": {}, "tcgplayer_usd": {}}
