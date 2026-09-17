@@ -190,6 +190,10 @@ class TcgdexConnector(CatalogConnector, SnapshotConnector):
         resp = get_with_retry(self._client, f"/{locale}/cards/{quote(tcgdex_id, safe='')}")
         resp.raise_for_status()
         pricing = resp.json().get("pricing") or {}
+        # Logged at INFO (visible in the same terminal running the backend) so a surprising-looking
+        # price breakdown can be checked against the exact raw fields TCGdex/Cardmarket returned,
+        # without a separate manual curl.
+        logger.info("raw pricing for %s: cardmarket=%s tcgplayer=%s", source_card_id, pricing.get("cardmarket"), pricing.get("tcgplayer"))
         return {
             "cardmarket_eur": _parse_cardmarket_variants(pricing.get("cardmarket") or {}),
             "tcgplayer_usd": _parse_tcgplayer_variants(pricing.get("tcgplayer") or {}),
