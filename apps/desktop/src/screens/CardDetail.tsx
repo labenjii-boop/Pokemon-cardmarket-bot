@@ -17,10 +17,6 @@ function formatEur(amount: number): string {
   return new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR" }).format(amount);
 }
 
-function formatUsd(amount: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
-}
-
 // TCGdex variant/finish keys are lowercase-hyphenated ("reverse-holo", "1st-edition",
 // "holofoil") — title-case them word by word for display.
 function formatVariantLabel(key: string): string {
@@ -47,9 +43,9 @@ function VariantPricing({ cardId }: { cardId: string }) {
   }
 
   const eurEntries = Object.entries(variants?.cardmarket_eur ?? {});
-  const usdEntries = Object.entries(variants?.tcgplayer_usd ?? {});
+  const tcgplayerEntries = Object.entries(variants?.tcgplayer_eur ?? {});
 
-  if (eurEntries.length === 0 && usdEntries.length === 0) {
+  if (eurEntries.length === 0 && tcgplayerEntries.length === 0) {
     return null;
   }
 
@@ -58,6 +54,8 @@ function VariantPricing({ cardId }: { cardId: string }) {
       <h2 className="mb-3 text-sm font-semibold text-[var(--color-text-muted)]">
         Pricing by variant (holo, reverse holo, 1st edition, etc)
       </h2>
+      {/* Both columns are EUR — TCGplayer reports in USD upstream, converted server-side so
+          the two marketplaces can be compared directly without doing currency math by eye. */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {eurEntries.length > 0 && (
           <div>
@@ -72,14 +70,14 @@ function VariantPricing({ cardId }: { cardId: string }) {
             </ul>
           </div>
         )}
-        {usdEntries.length > 0 && (
+        {tcgplayerEntries.length > 0 && (
           <div>
-            <p className="mb-1 text-xs uppercase tracking-wide text-[var(--color-text-muted)]">TCGplayer (USD)</p>
+            <p className="mb-1 text-xs uppercase tracking-wide text-[var(--color-text-muted)]">TCGplayer (EUR)</p>
             <ul className="divide-y divide-[var(--color-border)]">
-              {usdEntries.map(([variant, price]) => (
+              {tcgplayerEntries.map(([variant, price]) => (
                 <li key={variant} className="flex items-center justify-between py-1.5 text-sm">
                   <span>{formatVariantLabel(variant)}</span>
-                  <span className="font-medium">{formatUsd(price)}</span>
+                  <span className="font-medium">{formatEur(price)}</span>
                 </li>
               ))}
             </ul>

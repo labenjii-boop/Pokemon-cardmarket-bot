@@ -146,8 +146,13 @@ def test_get_card_variants_returns_404_for_unknown_card(client):
 
 @respx.mock
 def test_get_card_variants_returns_live_breakdown(client):
+    # TCGplayer reports in USD; this app displays EUR everywhere else, so the endpoint converts
+    # rather than handing back a second currency the caller would have to convert itself.
     c, main = client
     card_id = _seed_card(main)
+    with main.get_connection() as conn:
+        conn.execute("INSERT INTO fx_rates (rate_date, currency, eur_rate) VALUES ('2000-01-01', 'USD', 1.10)")
+        conn.commit()
     respx.get(f"{BASE_URL}/en/cards/base1-4").mock(
         return_value=httpx.Response(
             200,
@@ -155,7 +160,7 @@ def test_get_card_variants_returns_live_breakdown(client):
                 "id": "base1-4",
                 "pricing": {
                     "cardmarket": {"unit": "EUR", "trend": 100.0, "trend-holo": 250.0},
-                    "tcgplayer": {"unit": "USD", "holofoil": {"marketPrice": 300.0}},
+                    "tcgplayer": {"unit": "USD", "holofoil": {"marketPrice": 330.0}},
                 },
             },
         )
@@ -166,4 +171,30 @@ def test_get_card_variants_returns_live_breakdown(client):
     body = r.json()
     assert body["cardmarket_eur"]["normal"] == 100.0
     assert body["cardmarket_eur"]["holo"] == 250.0
-    assert body["tcgplayer_usd"] == {"holofoil": 300.0}
+    assert body["tcgplayer_eur"] == {"holofoil": 300.0}  # 330 USD / 1.10 -> 300 EUR
+
+
+@respx.mock
+def test_get_card_variants_omits_tcgplayer_row_with_no_fx_rate_yet(client):
+    # No fx_rates row is seeded here — a missing USD rate must not crash the endpoint or show a
+    # wrong number, it should just leave that side out until the rate syncs.
+    c, main = client
+    card_id = _seed_card(main)
+    respx.get(f"{BASE_URL}/en/cards/base1-4").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "base1-4",
+                "pricing": {
+                    "cardmarket": {"unit": "EUR", "trend": 100.0},
+                    "tcgplayer": {"unit": "USD", "holofoil": {"marketPrice": 330.0}},
+                },
+            },
+        )
+    )
+
+    r = c.get(f"/cards/{card_id}/variants")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["cardmarket_eur"]["normal"] == 100.0
+    assert body["tcgplayer_eur"] == {}

@@ -29,6 +29,7 @@ from app.secrets import delete_secret, get_secret, set_secret
 from app.ws import ConnectionManager
 from connectors.tcgdex import TcgdexConnector
 from services import jobs
+from services.currency import MissingFxRateError, to_eur
 from services.ingest import ingest_price_observations
 from services.search import search_cards
 from services.top100 import TIME_RANGE_TO_TIMEDELTA, period_for_range
@@ -255,19 +256,32 @@ def get_card_variants(card_id: str) -> dict:
     from /cards/{id}/prices: that endpoint's time series was the site of a real bug where mixing
     variant-specific prices together made the chart look like noise (see
     connectors/tcgdex.py's _observations_from_card_detail docstring) — this endpoint is where
-    that same per-variant data belongs instead, as a live snapshot, not stored history."""
+    that same per-variant data belongs instead, as a live snapshot, not stored history.
+
+    TCGplayer reports in USD; the rest of this app displays in EUR (Section 1) — converted here,
+    not left as a second currency, so the section is one consistent number line instead of
+    forcing whoever's looking at it to convert $ to € in their head to compare rows."""
     with get_connection() as conn:
         row = conn.execute("SELECT source, source_card_id FROM cards WHERE id = ?", (card_id,)).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="card not found")
-    if row["source"] != "tcgdex":
-        return {"cardmarket_eur": {}, "tcgplayer_usd": {}}  # only TCGdex-sourced cards support this today
+        if row is None:
+            raise HTTPException(status_code=404, detail="card not found")
+        if row["source"] != "tcgdex":
+            return {"cardmarket_eur": {}, "tcgplayer_eur": {}}  # only TCGdex-sourced cards support this today
 
-    connector = TcgdexConnector()
-    try:
-        return connector.fetch_card_variant_pricing(row["source_card_id"])
-    finally:
-        connector.close()
+        connector = TcgdexConnector()
+        try:
+            pricing = connector.fetch_card_variant_pricing(row["source_card_id"])
+        finally:
+            connector.close()
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        tcgplayer_eur: dict[str, float] = {}
+        for variant, usd_amount in pricing["tcgplayer_usd"].items():
+            try:
+                tcgplayer_eur[variant] = round(to_eur(conn, usd_amount, "USD", today), 2)
+            except MissingFxRateError:
+                continue  # no USD rate synced yet — omit rather than show a wrong/stale number
+        return {"cardmarket_eur": pricing["cardmarket_eur"], "tcgplayer_eur": tcgplayer_eur}
 
 
 @app.get("/top100")

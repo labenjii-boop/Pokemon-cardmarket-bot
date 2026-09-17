@@ -184,7 +184,7 @@ export function fetchCardPrices(cardId: string, timeRange: TimeRange): Promise<C
 
 export interface CardVariantPricing {
   cardmarket_eur: Record<string, number>;
-  tcgplayer_usd: Record<string, number>;
+  tcgplayer_eur: Record<string, number>;
 }
 
 export function fetchCardVariants(cardId: string): Promise<CardVariantPricing> {
